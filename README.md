@@ -1,142 +1,157 @@
-# Control de Gases — Benito Roggio Ambiental
+# Control de Gases — BRA (Versión Segura)
 
-## Instrucciones de setup (hacerlo UNA SOLA VEZ)
+## Arquitectura de seguridad
 
----
+```
+Browser (React)
+    ↓  solo habla con /api/
+Vercel Serverless Functions  ← service key vive aquí (SECRETO)
+    ↓  service key nunca llega al browser
+Supabase PostgreSQL
+```
 
-## PASO 1: Crear proyecto en Supabase (5 minutos)
-
-1. Ir a https://supabase.com y crear cuenta gratuita
-2. Crear nuevo proyecto:
-   - Name: `tubos-bra`
-   - Password: (elegí una segura, la necesitás para la BD)
-   - Region: South America (São Paulo)
-3. Esperar que termine de provisionar (~2 min)
-
----
-
-## PASO 2: Ejecutar el SQL (2 minutos)
-
-1. En tu proyecto Supabase, ir a: **SQL Editor** (ícono de terminal en sidebar)
-2. Copiar TODO el contenido de `SUPABASE_SETUP.sql`
-3. Pegarlo en el editor y hacer clic en **Run**
-4. Verificar que no haya errores rojos
-
-Esto crea:
-- Tabla `tubos` (inventario)
-- Tabla `movimientos` (historial)
-- Tabla `ciclos_mensuales` (costos)
-- Tabla `usuarios` (los 4 usuarios del sistema)
+**Lo que el browser nunca ve:**
+- SUPABASE_URL
+- SUPABASE_SERVICE_KEY
+- JWT_SECRET
 
 ---
 
-## PASO 3: Obtener credenciales de Supabase (1 minuto)
+## PASO 1: Supabase
 
-1. En Supabase, ir a: **Settings > API**
-2. Copiar:
+1. Ir a https://supabase.com → crear proyecto (región: São Paulo)
+2. SQL Editor → ejecutar `SUPABASE_SETUP.sql`
+3. Ir a Settings > API y copiar:
    - **Project URL**: `https://xxxx.supabase.co`
-   - **anon public** key: `eyJxx...` (clave larga)
+   - **service_role** key (NO la anon key — la service role está más abajo en la misma página)
 
 ---
 
-## PASO 4: Configurar las credenciales en el código
+## PASO 2: Generar JWT_SECRET
 
-Abrir el archivo `src/lib/supabase.js` y reemplazar:
+Necesitás una cadena aleatoria larga. Podés usar cualquiera de estas opciones:
 
-```javascript
-const SUPABASE_URL = 'https://TU_PROYECTO.supabase.co'; // ← tu URL
-const SUPABASE_ANON_KEY = 'TU_ANON_KEY'; // ← tu clave anon
-```
-
----
-
-## PASO 5: Deployar en Vercel (5 minutos)
-
-### Opción A: Con GitHub (recomendado)
-1. Subir esta carpeta a un repositorio GitHub (puede ser privado)
-2. Ir a https://vercel.com → crear cuenta gratuita
-3. "New Project" → Importar el repo
-4. Vercel detecta automáticamente React
-5. En "Environment Variables" agregar:
-   - `REACT_APP_SUPABASE_URL` = tu URL de Supabase
-   - `REACT_APP_SUPABASE_ANON_KEY` = tu anon key
-6. Deploy → listo
-
-### Opción B: Con Vercel CLI (sin GitHub)
 ```bash
-npm install -g vercel
-cd tubos-app
-vercel
-# Seguir las instrucciones, elegir "Create new project"
+# Opción A: en terminal (Linux/Mac)
+openssl rand -base64 32
+
+# Opción B: en Node.js
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+
+# Opción C: usar cualquier generador online de strings aleatorias de 32+ chars
+# Ejemplo: "k8mX2pQw9nLvR4tYhJsE7dBzCuA1fGiN"
 ```
 
 ---
 
-## USUARIOS INICIALES
+## PASO 3: Subir a GitHub (privado)
+
+1. Crear repo privado en github.com
+2. Subir esta carpeta al repo
+
+---
+
+## PASO 4: Deploy en Vercel
+
+1. Ir a https://vercel.com → New Project → importar tu repo
+2. En **Environment Variables** agregar las 3 variables:
+
+| Variable | Valor |
+|----------|-------|
+| `SUPABASE_URL` | `https://zaeivbpacgpnlrxzqkoi.supabase.co` |
+| `SUPABASE_SERVICE_KEY` | `eyJ...` (la service_role key, NO la anon) |
+| `JWT_SECRET` | el string aleatorio que generaste |
+
+3. Click en **Deploy**
+4. Vercel compila React + activa las API routes automáticamente
+
+---
+
+## Variables de entorno
+
+```env
+# Solo viven en el servidor de Vercel, NUNCA en el browser
+SUPABASE_URL=https://zaeivbpacgpnlrxzqkoi.supabase.co
+SUPABASE_SERVICE_KEY=eyJ...  ← service_role key
+JWT_SECRET=string-aleatorio-de-32-chars
+```
+
+**Importante:** NO crear archivo `.env` en el proyecto. Las variables se configuran
+directamente en el dashboard de Vercel. Así nunca quedan en el repo.
+
+---
+
+## Dónde encontrar la service_role key en Supabase
+
+```
+Supabase Dashboard
+    → Settings (ícono engranaje)
+    → API
+    → Project API keys
+    → service_role  ← esta (tiene "SECRET" al lado)
+```
+
+La anon key es pública por diseño. La service_role key bypasea RLS y tiene acceso total — por eso la guardamos solo en el servidor.
+
+---
+
+## Estructura del proyecto
+
+```
+tubos-bra-secure/
+├── api/                        ← Vercel Serverless Functions (SERVIDOR)
+│   ├── _lib.js                 ← Supabase client + auth helper
+│   ├── login.js                ← POST /api/login
+│   ├── tubos.js                ← GET/POST/PUT /api/tubos
+│   ├── movimientos.js          ← GET/POST /api/movimientos
+│   ├── ciclos.js               ← GET/POST/PUT /api/ciclos
+│   └── perfil.js               ← PUT /api/perfil
+├── src/                        ← React (BROWSER, código público)
+│   ├── lib/
+│   │   ├── api.js              ← Cliente HTTP (solo habla con /api/)
+│   │   └── constants.js        ← Tipos, estados, permisos
+│   ├── components/
+│   │   ├── AuthContext.js      ← Auth state + JWT en localStorage
+│   │   └── Layout.js           ← Sidebar
+│   └── pages/
+│       ├── LoginPage.js
+│       ├── Dashboard.js
+│       ├── Movimientos.js
+│       ├── RegistrarMovimiento.js
+│       ├── GestionTubos.js
+│       ├── CiclosMensuales.js
+│       └── Perfil.js
+├── vercel.json                 ← Config de builds y routes
+├── SUPABASE_SETUP.sql
+└── README.md
+```
+
+---
+
+## Cómo funciona el JWT
+
+1. Usuario ingresa usuario + contraseña
+2. `/api/login` valida contra Supabase (con service key, desde el servidor)
+3. Si es correcto, genera un JWT firmado con `JWT_SECRET` con 8h de expiración
+4. El browser guarda ese JWT en localStorage
+5. Cada request siguiente manda el JWT en el header `Authorization: Bearer ...`
+6. Cada API route verifica el JWT antes de hacer cualquier cosa
+7. Si el JWT expiró o es inválido → 401 → logout automático
+
+---
+
+## Usuarios iniciales
 
 | Usuario | Contraseña | Rol |
 |---------|-----------|-----|
-| admin.bra | tubos.admin | Administrador (todo) |
-| almacen.bra | tubos.almacen | Almacén (registra movimientos, gestiona tubos) |
-| compras.bra | tubos.compras | Compras (ve costos, reportes, movimientos) |
-| mantenimiento.bra | gases.mantenimiento | Mantenimiento (solo consulta estado) |
+| admin.bra | tubos.admin | Todo |
+| almacen.bra | tubos.almacen | Registra movimientos, gestiona tubos |
+| compras.bra | tubos.compras | Ve costos y reportes |
+| mantenimiento.bra | gases.mantenimiento | Solo consulta estado |
 
 ---
 
-## PERMISOS POR ROL
+## Si Supabase se pausa
 
-| Función | Admin | Almacén | Compras | Mantenimiento |
-|---------|-------|---------|---------|---------------|
-| Ver estado de tubos | ✓ | ✓ | ✓ | ✓ |
-| Registrar movimientos | ✓ | ✓ | ✗ | ✗ |
-| Gestionar tubos | ✓ | ✓ | ✗ | ✗ |
-| Ver historial | ✓ | ✓ | ✓ | ✗ |
-| Ver costos/ciclos | ✓ | ✗ | ✓ | ✗ |
-
----
-
-## SI SUPABASE SE PAUSA
-
-1. Ir a https://supabase.com → tu proyecto
-2. Clic en el botón "Restore project" o "Reactivar"
-3. Esperar 5-10 minutos
-4. La app vuelve a funcionar (los datos NO se pierden)
-
----
-
-## DESARROLLO LOCAL (opcional)
-
-```bash
-cd tubos-app
-npm install
-npm start
-# Abre http://localhost:3000
-```
-
----
-
-## ESTRUCTURA DEL PROYECTO
-
-```
-tubos-app/
-├── public/
-│   └── index.html
-├── src/
-│   ├── lib/
-│   │   └── supabase.js          ← Credenciales y config
-│   ├── components/
-│   │   ├── AuthContext.js       ← Login/logout/auth state
-│   │   └── Layout.js            ← Sidebar y navegación
-│   ├── pages/
-│   │   ├── LoginPage.js         ← Pantalla de login
-│   │   ├── Dashboard.js         ← Estado de tubos (todos)
-│   │   ├── Movimientos.js       ← Historial (Almacén + Compras)
-│   │   ├── RegistrarMovimiento.js ← Registrar (Almacén)
-│   │   ├── GestionTubos.js      ← ABM tubos (Almacén)
-│   │   ├── CiclosMensuales.js   ← Costos (Compras)
-│   │   └── Perfil.js            ← Cambio de contraseña y emails
-│   ├── App.js
-│   └── index.js
-├── SUPABASE_SETUP.sql           ← Ejecutar en Supabase SQL Editor
-└── README.md
-```
+Los datos no se pierden. Ir a supabase.com → tu proyecto → "Restore project". 
+En ~10 minutos vuelve todo. Con uso regular (al menos 1 login por semana) no se pausa.

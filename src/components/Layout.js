@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from './AuthContext';
-import { PERMISOS } from '../lib/supabase';
+import { PERMISOS } from '../lib/constants';
 
 const SECTOR_COLOR = {
   admin: { bg: '#7c3aed', light: '#ede9fe', text: 'Admin' },
