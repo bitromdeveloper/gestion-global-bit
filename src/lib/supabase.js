@@ -2,8 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 
 // Reemplazá estos valores con los de tu proyecto Supabase
 // Los encontrás en: Settings > API
-const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL || 'https://TU_PROYECTO.supabase.co';
-const SUPABASE_ANON_KEY = process.env.REACT_APP_SUPABASE_ANON_KEY || 'TU_ANON_KEY';
+const SUPABASE_URL = 'https://zaeivbpacgpnlrxzqkoi.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InphZWl2YnBhY2dwbmxyeHpxa29pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyMjI2MTksImV4cCI6MjA5Nzc5ODYxOX0.VSU3v01Y4aJp9fceZFYHcw_z9BLxDTd7UAlkKTTt_Zg';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
