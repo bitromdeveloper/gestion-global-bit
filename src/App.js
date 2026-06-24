@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './components/AuthContext';
 import { PERMISOS } from './lib/constants';
 import Layout from './components/Layout';
+import AlertaStock from './components/AlertaStock';
 import LoginPage from './pages/LoginPage';
 import Dashboard from './pages/Dashboard';
-import { Movimientos } from './pages/Movimientos';
-import RegistrarMovimiento from './pages/RegistrarMovimiento';
-import GestionTubos from './pages/GestionTubos';
+import DashboardMantenimiento from './pages/DashboardMantenimiento';
+import DashboardInfraestructura from './pages/DashboardInfraestructura';
+import Movimientos from './pages/Movimientos';
+import Historial from './pages/Historial';
 import CiclosMensuales from './pages/CiclosMensuales';
 import Perfil from './pages/Perfil';
 
@@ -26,20 +28,25 @@ function AppContent() {
 
   const renderPage = () => {
     switch (currentPage) {
-      case 'dashboard':    return <Dashboard />;
-      case 'movimientos':  return permisos.verMovimientos ? <Movimientos /> : null;
-      case 'registrar':    return permisos.registrarMovimientos ? <RegistrarMovimiento /> : null;
-      case 'tubos':        return permisos.gestionarTubos ? <GestionTubos /> : null;
-      case 'costos':       return permisos.verCostos ? <CiclosMensuales /> : null;
-      case 'perfil':       return <Perfil />;
-      default:             return <Dashboard />;
+      case 'dashboard':
+        if (user.sector === 'mantenimiento')  return <DashboardMantenimiento />;
+        if (user.sector === 'infraestructura') return <DashboardInfraestructura />;
+        return <Dashboard />;
+      case 'movimientos': return permisos.hacerMovimientos ? <Movimientos /> : null;
+      case 'historial':   return permisos.verHistorial     ? <Historial />   : null;
+      case 'costos':      return permisos.verCostos        ? <CiclosMensuales /> : null;
+      case 'perfil':      return <Perfil />;
+      default:            return <Dashboard />;
     }
   };
 
   return (
-    <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
-      {renderPage()}
-    </Layout>
+    <>
+      <AlertaStock />
+      <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
+        {renderPage()}
+      </Layout>
+    </>
   );
 }
 

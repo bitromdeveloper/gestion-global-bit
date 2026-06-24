@@ -1,28 +1,34 @@
+export const TIPOS_TUBO     = ['O2', 'Butano', 'N2', 'Atal'];
+export const UBICACIONES     = ['Almacén', 'Mantenimiento', 'Infraestructura', 'Sub Base'];
+export const SECTORES        = ['Mantenimiento', 'Infraestructura', 'Sub Base', 'Compras', 'Admin'];
+
 export const PERMISOS = {
   admin: {
-    verTubos: true, verMovimientos: true, verCostos: true,
-    registrarMovimientos: true, gestionarTubos: true, verReportes: true,
+    verDashboard: true, verMovimientos: true, verCostos: true,
+    verHistorial: true, gestionarTubos: true, hacerMovimientos: true,
   },
   almacen: {
-    verTubos: true, verMovimientos: true, verCostos: false,
-    registrarMovimientos: true, gestionarTubos: true, verReportes: false,
+    verDashboard: true, verMovimientos: true, verCostos: false,
+    verHistorial: true, gestionarTubos: true, hacerMovimientos: true,
   },
   compras: {
-    verTubos: true, verMovimientos: true, verCostos: true,
-    registrarMovimientos: false, gestionarTubos: false, verReportes: true,
+    verDashboard: true, verMovimientos: false, verCostos: true,
+    verHistorial: true, gestionarTubos: false, hacerMovimientos: false,
   },
   mantenimiento: {
-    verTubos: true, verMovimientos: false, verCostos: false,
-    registrarMovimientos: false, gestionarTubos: false, verReportes: false,
+    verDashboard: true, verMovimientos: false, verCostos: false,
+    verHistorial: false, gestionarTubos: false, hacerMovimientos: true,
   },
   infraestructura: {
-    verTubos: true, verMovimientos: false, verCostos: false,
-    registrarMovimientos: false, gestionarTubos: false, verReportes: false,
+    verDashboard: true, verMovimientos: false, verCostos: false,
+    verHistorial: false, gestionarTubos: false, hacerMovimientos: true,
   },
 };
 
-export const TIPOS_TUBO = ['O2', 'Butano', 'N2', 'Atal'];
-export const ESTADOS_TUBO = ['Lleno', 'Vacío', 'En Reparación', 'Retirado'];
-export const UBICACIONES = ['Almacén', 'Mantenimiento', 'Infraestructura', 'Proveedor'];
-export const TIPOS_OPERACION = ['Entrega', 'Cambio', 'Retorno', 'Devolución'];
-export const SECTORES = ['Almacén', 'Mantenimiento', 'Infraestructura', 'Proveedor', 'Compras'];
+// Qué movimientos puede hacer cada sector
+export const MOVIMIENTOS_PERMITIDOS = {
+  almacen:        ['Carga', 'Alta', 'Baja'],
+  mantenimiento:  ['Consumo', 'Devolución'],
+  infraestructura:['Consumo', 'Devolución'],
+  admin:          ['Carga', 'Alta', 'Baja', 'Consumo', 'Devolución'],
+};

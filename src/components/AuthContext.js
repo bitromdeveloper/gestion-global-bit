@@ -1,58 +1,61 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { api } from '../lib/api';
+import { supabase } from '../lib/supabase';
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  const [user, setUser]       = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('tubos_user');
-    const storedToken = localStorage.getItem('tubos_token');
-    if (storedUser && storedToken) {
-      try { setUser(JSON.parse(storedUser)); } catch {}
-    }
+    const stored = localStorage.getItem('tubos_user');
+    if (stored) { try { setUser(JSON.parse(stored)); } catch {} }
     setLoading(false);
   }, []);
 
   const login = async (username, password) => {
-    try {
-      const data = await api.login(username, password);
-      localStorage.setItem('tubos_token', data.token);
-      localStorage.setItem('tubos_user', JSON.stringify(data.user));
-      setUser(data.user);
-      return { user: data.user };
-    } catch (err) {
-      return { error: err.message };
-    }
+    const { data, error } = await supabase
+      .from('usuarios').select('*')
+      .eq('username', username.trim())
+      .maybeSingle();
+
+    if (error || !data) return { error: 'Usuario o contraseña incorrectos' };
+    if (data.password_hash !== password) return { error: 'Usuario o contraseña incorrectos' };
+
+    const userData = {
+      id: data.id, username: data.username, sector: data.sector,
+      email1: data.email1, email2: data.email2, email3: data.email3,
+    };
+    setUser(userData);
+    localStorage.setItem('tubos_user', JSON.stringify(userData));
+    return { user: userData };
   };
 
   const logout = () => {
-    localStorage.removeItem('tubos_token');
     localStorage.removeItem('tubos_user');
     setUser(null);
   };
 
   const changePassword = async (passwordActual, passwordNueva) => {
-    try {
-      await api.cambiarPassword(passwordActual, passwordNueva);
-      return { success: true };
-    } catch (err) {
-      return { error: err.message };
-    }
+    const { data } = await supabase.from('usuarios').select('id')
+      .eq('id', user.id).eq('password_hash', passwordActual).maybeSingle();
+    if (!data) return { error: 'Contraseña actual incorrecta' };
+    const { error } = await supabase.from('usuarios')
+      .update({ password_hash: passwordNueva, updated_at: new Date().toISOString() })
+      .eq('id', user.id);
+    if (error) return { error: 'Error al actualizar contraseña' };
+    return { success: true };
   };
 
   const updateEmails = async (email1, email2, email3) => {
-    try {
-      await api.actualizarEmails(email1, email2, email3);
-      const updated = { ...user, email1, email2, email3 };
-      setUser(updated);
-      localStorage.setItem('tubos_user', JSON.stringify(updated));
-      return { success: true };
-    } catch (err) {
-      return { error: err.message };
-    }
+    const { error } = await supabase.from('usuarios')
+      .update({ email1, email2, email3, updated_at: new Date().toISOString() })
+      .eq('id', user.id);
+    if (error) return { error: 'Error al actualizar emails' };
+    const updated = { ...user, email1, email2, email3 };
+    setUser(updated);
+    localStorage.setItem('tubos_user', JSON.stringify(updated));
+    return { success: true };
   };
 
   return (
