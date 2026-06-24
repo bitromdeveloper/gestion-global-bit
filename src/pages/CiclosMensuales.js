@@ -1,156 +1,297 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../lib/db';
+import { TIPOS_TUBO } from '../lib/constants';
 
 const mesActual = () => new Date().toISOString().slice(0, 7);
 
 export default function CiclosMensuales() {
-  const [ciclos, setCiclos]       = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [mes, setMes]             = useState(mesActual());
-  const [editando, setEditando]   = useState(null);
-  const [msg, setMsg]             = useState({ type:'', text:'' });
+  const [tubos, setTubos]             = useState([]);
+  const [movimientos, setMovimientos] = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [mes, setMes]                 = useState(mesActual());
 
-  useEffect(() => { fetchCiclos(); }, [mes]);
+  useEffect(() => { fetchData(); }, []);
 
-  const fetchCiclos = async () => {
+  const fetchData = async () => {
     setLoading(true);
-    try { setCiclos(await db.getCiclos(mes)); } catch {}
+    try {
+      const [t, m] = await Promise.all([db.getTubos(), db.getMovimientos()]);
+      setTubos(t || []);
+      setMovimientos(m || []);
+    } catch {}
     setLoading(false);
   };
 
-  const iniciarMes = async () => {
-    setMsg({ type:'', text:'' });
-    try {
-      await db.iniciarCiclo(mes);
-      await fetchCiclos();
-      setMsg({ type:'success', text:`Ciclo ${mes} iniciado desde el inventario actual` });
-    } catch (err) { setMsg({ type:'error', text: err.message }); }
-  };
+  // ── COSTOS FIJOS: alquiler de todos los tubos activos ──
+  // Cada tubo activo paga alquiler mensual independientemente de si se usó
+  const costosFijos = tubos.map(t => ({
+    ...t,
+    costoAlquiler: parseFloat(t.alquiler_mensual) || 0,
+  }));
 
-  const handleEdit = async (ciclo, field, value) => {
-    try {
-      await db.actualizarCiclo({ id: ciclo.id, [field]: parseFloat(value) || 0 });
-      setCiclos(prev => prev.map(c => c.id === ciclo.id ? { ...c, [field]: parseFloat(value) || 0 } : c));
-    } catch {}
-    setEditando(null);
-  };
+  const totalAlquiler = costosFijos.reduce((sum, t) => sum + t.costoAlquiler, 0);
 
-  const costoTotal = ciclos.reduce((sum, c) => {
-    return sum + (parseFloat(c.precio_alquiler_mensual) * parseInt(c.cantidad_stock)) +
-                 (parseInt(c.cambios_realizados) * parseFloat(c.precio_transporte_tubo));
-  }, 0);
+  // Resumen de alquiler por tipo
+  const alquilerPorTipo = TIPOS_TUBO.map(tipo => {
+    const tubosDelTipo = costosFijos.filter(t => t.tipo === tipo);
+    return {
+      tipo,
+      cantidad: tubosDelTipo.length,
+      precioUnitario: tubosDelTipo[0]?.costoAlquiler || 0,
+      subtotal: tubosDelTipo.reduce((sum, t) => sum + t.costoAlquiler, 0),
+    };
+  }).filter(g => g.cantidad > 0);
+
+  // ── COSTOS VARIABLES: recargas del mes ──
+  // Cada Carga registrada = costo de gas + transporte
+  const cargasDelMes = movimientos.filter(m =>
+    m.tipo_operacion === 'Carga' && m.fecha?.startsWith(mes)
+  );
+
+  const recargasDetalle = cargasDelMes.map(mov => {
+    const tubo = tubos.find(t => t.id === mov.tubo_id);
+    const capacidad       = parseFloat(tubo?.capacidad) || 0;
+    const precioUnitario  = parseFloat(tubo?.precio_unitario) || 0;
+    const precioTransporte= parseFloat(tubo?.precio_transporte) || 0;
+    const costoGas        = capacidad * precioUnitario;
+    const costoTotal      = costoGas + precioTransporte;
+    return {
+      fecha:           mov.fecha,
+      codigo:          mov.tubo_codigo,
+      tipo:            mov.tubo_tipo,
+      capacidad,
+      unidad:          tubo?.unidad || '',
+      precioUnitario,
+      precioTransporte,
+      costoGas,
+      costoTotal,
+    };
+  });
+
+  const totalGas        = recargasDetalle.reduce((sum, r) => sum + r.costoGas, 0);
+  const totalTransporte = recargasDetalle.reduce((sum, r) => sum + r.precioTransporte, 0);
+  const totalVariables  = totalGas + totalTransporte;
+  const totalMes        = totalAlquiler + totalVariables;
+
+  // Resumen de recargas por tipo
+  const recargasPorTipo = TIPOS_TUBO.map(tipo => ({
+    tipo,
+    cantidad:   recargasDetalle.filter(r => r.tipo === tipo).length,
+    costoGas:   recargasDetalle.filter(r => r.tipo === tipo).reduce((s, r) => s + r.costoGas, 0),
+    transporte: recargasDetalle.filter(r => r.tipo === tipo).reduce((s, r) => s + r.precioTransporte, 0),
+  })).filter(g => g.cantidad > 0);
+
+  if (loading) return <div style={s.loading}>Cargando...</div>;
 
   return (
     <div>
       <div style={s.pageHeader}>
-        <h2 style={s.pageTitle}>Ciclos y Costos Mensuales</h2>
-        <div style={s.headerActions}>
+        <div>
+          <h2 style={s.pageTitle}>Costos del mes</h2>
+          <p style={s.pageSub}>Costos fijos de alquiler + costos variables por recarga</p>
+        </div>
+        <div style={s.headerRight}>
           <input style={s.monthInput} type="month" value={mes} onChange={e => setMes(e.target.value)} />
-          <button style={s.iniciarBtn} onClick={iniciarMes}>+ Iniciar ciclo</button>
+          <button style={s.refreshBtn} onClick={fetchData}>↻</button>
         </div>
       </div>
 
-      {msg.text && <div style={msg.type === 'error' ? s.errorMsg : s.successMsg}>{msg.text}</div>}
-
-      {ciclos.length > 0 && (
-        <div style={s.resumenCard}>
-          <div style={s.resumenTitle}>Resumen {mes}</div>
-          <div style={s.resumenGrid}>
-            <div style={s.resumenItem}>
-              <div style={s.resumenValue}>{ciclos.reduce((s,c) => s + (c.cantidad_stock||0), 0)}</div>
-              <div style={s.resumenLabel}>Tubos en stock</div>
-            </div>
-            <div style={s.resumenItem}>
-              <div style={s.resumenValue}>{ciclos.reduce((s,c) => s + (c.cambios_realizados||0), 0)}</div>
-              <div style={s.resumenLabel}>Cambios totales</div>
-            </div>
-            <div style={{ ...s.resumenItem, borderRight:'none' }}>
-              <div style={{ ...s.resumenValue, color:'#2563eb' }}>${costoTotal.toFixed(2)}</div>
-              <div style={s.resumenLabel}>Costo total del mes</div>
-            </div>
-          </div>
+      {/* Resumen total del mes */}
+      <div style={s.totalCard}>
+        <div style={s.totalItem}>
+          <div style={s.totalValue}>${totalAlquiler.toFixed(2)}</div>
+          <div style={s.totalLabel}>Alquiler mensual</div>
+          <div style={s.totalSub}>{tubos.length} tubos en stock</div>
         </div>
-      )}
+        <div style={s.totalSep}>+</div>
+        <div style={s.totalItem}>
+          <div style={s.totalValue}>${totalVariables.toFixed(2)}</div>
+          <div style={s.totalLabel}>Costos de recarga</div>
+          <div style={s.totalSub}>{recargasDetalle.length} recargas en {mes}</div>
+        </div>
+        <div style={s.totalSep}>=</div>
+        <div style={{ ...s.totalItem, background:'#1e3a5f', borderRadius:12 }}>
+          <div style={{ ...s.totalValue, color:'#60a5fa', fontSize:32 }}>${totalMes.toFixed(2)}</div>
+          <div style={{ ...s.totalLabel, color:'#94a3b8' }}>Total del mes</div>
+        </div>
+      </div>
 
-      <div style={s.tableCard}>
-        {loading ? <div style={s.loading}>Cargando...</div> : ciclos.length === 0 ? (
-          <div style={s.empty}>
-            <p>No hay ciclo para {mes}.</p>
-            <p style={{ fontSize:13, color:'#64748b' }}>Hacé clic en "Iniciar ciclo" para crear desde el inventario actual.</p>
+      {/* ── COSTOS FIJOS ── */}
+      <div style={s.section}>
+        <div style={s.sectionHeader}>
+          <div>
+            <h3 style={s.sectionTitle}>Costos fijos — Alquiler mensual</h3>
+            <p style={s.sectionSub}>Todos los tubos activos pagan alquiler mes a mes independientemente del uso</p>
           </div>
-        ) : (
+          <div style={s.sectionTotal}>${totalAlquiler.toFixed(2)}</div>
+        </div>
+
+        {/* Resumen por tipo */}
+        <div style={s.tipoGrid}>
+          {alquilerPorTipo.map(g => (
+            <div key={g.tipo} style={s.tipoCard}>
+              <div style={s.tipoNombre}>{g.tipo}</div>
+              <div style={s.tipoDetalle}>{g.cantidad} tubos × ${g.precioUnitario.toFixed(2)}</div>
+              <div style={s.tipoSubtotal}>${g.subtotal.toFixed(2)}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Tabla de tubos */}
+        <div style={s.tableWrap}>
           <table style={s.table}>
             <thead><tr>
-              {['Tipo de Gas','Stock (tubos)','Alquiler por tubo','Precio transporte','Cambios en el mes','Costo Total'].map(h => (
+              {['Código','Tipo','Capacidad','Ubicación','Alquiler/mes'].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {ciclos.map(ciclo => {
-                const ct = (parseFloat(ciclo.precio_alquiler_mensual) * parseInt(ciclo.cantidad_stock)) +
-                           (parseInt(ciclo.cambios_realizados) * parseFloat(ciclo.precio_transporte_tubo));
-                return (
-                  <tr key={ciclo.id}>
-                    <td style={s.td}><strong>{ciclo.tipo_tubo}</strong></td>
-                    <EC value={ciclo.cantidad_stock}          ciclo={ciclo} field="cantidad_stock"          editando={editando} setEditando={setEditando} onSave={handleEdit} isInt />
-                    <EC value={ciclo.precio_alquiler_mensual} ciclo={ciclo} field="precio_alquiler_mensual" editando={editando} setEditando={setEditando} onSave={handleEdit} prefix="$" />
-                    <EC value={ciclo.precio_transporte_tubo}  ciclo={ciclo} field="precio_transporte_tubo"  editando={editando} setEditando={setEditando} onSave={handleEdit} prefix="$" />
-                    <EC value={ciclo.cambios_realizados}      ciclo={ciclo} field="cambios_realizados"      editando={editando} setEditando={setEditando} onSave={handleEdit} isInt />
-                    <td style={{ ...s.td, fontWeight:700, color:'#2563eb', fontSize:15 }}>${ct.toFixed(2)}</td>
-                  </tr>
-                );
-              })}
-              <tr style={{ background:'#f8fafc' }}>
-                <td style={{ ...s.td, fontWeight:700 }} colSpan={5}>TOTAL DEL MES</td>
-                <td style={{ ...s.td, fontWeight:800, color:'#2563eb', fontSize:16 }}>${costoTotal.toFixed(2)}</td>
+              {costosFijos.map(t => (
+                <tr key={t.id}>
+                  <td style={s.td}><strong>{t.codigo}</strong></td>
+                  <td style={s.td}>{t.tipo}</td>
+                  <td style={s.td}>{t.capacidad} {t.unidad}</td>
+                  <td style={s.td}>{t.ubicacion}</td>
+                  <td style={{ ...s.td, fontWeight:600, color:'#0f172a' }}>${t.costoAlquiler.toFixed(2)}</td>
+                </tr>
+              ))}
+              <tr style={s.totalRow}>
+                <td style={s.tdTotal} colSpan={4}>TOTAL ALQUILER</td>
+                <td style={s.tdTotal}>${totalAlquiler.toFixed(2)}</td>
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* ── COSTOS VARIABLES ── */}
+      <div style={s.section}>
+        <div style={s.sectionHeader}>
+          <div>
+            <h3 style={s.sectionTitle}>Costos variables — Recargas de {mes}</h3>
+            <p style={s.sectionSub}>Gas (capacidad × precio/unidad) + transporte por cada recarga</p>
+          </div>
+          <div style={s.sectionTotal}>${totalVariables.toFixed(2)}</div>
+        </div>
+
+        {recargasDetalle.length === 0 ? (
+          <p style={s.empty}>No hubo recargas registradas en {mes}</p>
+        ) : (
+          <>
+            {/* Resumen por tipo */}
+            {recargasPorTipo.length > 0 && (
+              <div style={s.tipoGrid}>
+                {recargasPorTipo.map(g => (
+                  <div key={g.tipo} style={s.tipoCard}>
+                    <div style={s.tipoNombre}>{g.tipo}</div>
+                    <div style={s.tipoDetalle}>{g.cantidad} recarga{g.cantidad > 1 ? 's' : ''}</div>
+                    <div style={s.tipoDetalle}>Gas: ${g.costoGas.toFixed(2)} + Transporte: ${g.transporte.toFixed(2)}</div>
+                    <div style={s.tipoSubtotal}>${(g.costoGas + g.transporte).toFixed(2)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Tabla de recargas */}
+            <div style={s.tableWrap}>
+              <table style={s.table}>
+                <thead><tr>
+                  {['Fecha','Tubo','Tipo','Capacidad','Precio/unidad','Costo gas','Transporte','Total'].map(h => (
+                    <th key={h} style={s.th}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {recargasDetalle.map((r, i) => (
+                    <tr key={i}>
+                      <td style={s.td}>{r.fecha}</td>
+                      <td style={s.td}><strong>{r.codigo}</strong></td>
+                      <td style={s.td}>{r.tipo}</td>
+                      <td style={s.td}>{r.capacidad} {r.unidad}</td>
+                      <td style={s.td}>${r.precioUnitario.toFixed(2)}/{r.unidad}</td>
+                      <td style={s.td}>${r.costoGas.toFixed(2)}</td>
+                      <td style={s.td}>${r.precioTransporte.toFixed(2)}</td>
+                      <td style={{ ...s.td, fontWeight:600, color:'#0f172a' }}>${r.costoTotal.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                  <tr style={s.totalRow}>
+                    <td style={s.tdTotal} colSpan={5}>TOTAL RECARGAS</td>
+                    <td style={s.tdTotal}>${totalGas.toFixed(2)}</td>
+                    <td style={s.tdTotal}>${totalTransporte.toFixed(2)}</td>
+                    <td style={s.tdTotal}>${totalVariables.toFixed(2)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
-      <div style={s.hint}>Hacé clic en cualquier celda para editarla. Los cambios se guardan automáticamente.</div>
+
+      {/* ── RESUMEN FINAL ── */}
+      <div style={s.resumenFinal}>
+        <h3 style={s.resumenTitulo}>Resumen de facturación — {mes}</h3>
+        <div style={s.resumenGrid}>
+          <div style={s.resumenItem}>
+            <span style={s.resumenLabel}>Alquiler mensual ({tubos.length} tubos)</span>
+            <span style={s.resumenValor}>${totalAlquiler.toFixed(2)}</span>
+          </div>
+          <div style={s.resumenItem}>
+            <span style={s.resumenLabel}>Gas ({recargasDetalle.length} recargas)</span>
+            <span style={s.resumenValor}>${totalGas.toFixed(2)}</span>
+          </div>
+          <div style={s.resumenItem}>
+            <span style={s.resumenLabel}>Transporte ({recargasDetalle.length} viajes)</span>
+            <span style={s.resumenValor}>${totalTransporte.toFixed(2)}</span>
+          </div>
+          <div style={{ ...s.resumenItem, borderTop:'2px solid #e2e8f0', paddingTop:12, marginTop:4 }}>
+            <span style={{ ...s.resumenLabel, fontWeight:700, color:'#0f172a', fontSize:15 }}>TOTAL A PAGAR</span>
+            <span style={{ ...s.resumenValor, fontSize:20, color:'#2563eb' }}>${totalMes.toFixed(2)}</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function EC({ value, ciclo, field, editando, setEditando, onSave, prefix='', isInt=false }) {
-  const [val, setVal] = useState(value);
-  const key = `${ciclo.id}-${field}`;
-  if (editando === key) return (
-    <td style={s.td}>
-      <input style={s.editInput} type="number" step={isInt ? 1 : 0.01} value={val} autoFocus
-        onChange={e => setVal(e.target.value)}
-        onBlur={() => onSave(ciclo, field, val)}
-        onKeyDown={e => { if (e.key === 'Enter') onSave(ciclo, field, val); if (e.key === 'Escape') setEditando(null); }} />
-    </td>
-  );
-  return (
-    <td style={{ ...s.td, cursor:'pointer' }} onClick={() => { setVal(value); setEditando(key); }}>
-      {prefix}{isInt ? parseInt(value) : parseFloat(value).toFixed(2)} <span style={{ fontSize:11, color:'#94a3b8' }}>✎</span>
-    </td>
-  );
-}
-
 const s = {
-  pageHeader:   { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24, flexWrap:'wrap', gap:12 },
-  pageTitle:    { margin:0, fontSize:22, fontWeight:700, color:'#0f172a' },
-  headerActions:{ display:'flex', gap:10, alignItems:'center' },
-  monthInput:   { padding:'8px 12px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:13 },
-  iniciarBtn:   { padding:'9px 16px', background:'#2563eb', color:'#fff', border:'none', borderRadius:8, fontSize:13, fontWeight:600, cursor:'pointer' },
-  resumenCard:  { background:'#fff', borderRadius:12, padding:24, marginBottom:20, boxShadow:'0 1px 3px rgba(0,0,0,0.06)' },
-  resumenTitle: { fontSize:13, fontWeight:700, color:'#64748b', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:14 },
-  resumenGrid:  { display:'flex' },
-  resumenItem:  { flex:1, borderRight:'1px solid #e2e8f0', paddingRight:24 },
-  resumenValue: { fontSize:32, fontWeight:800, color:'#0f172a' },
-  resumenLabel: { fontSize:13, color:'#64748b', marginTop:4 },
-  tableCard:    { background:'#fff', borderRadius:12, padding:24, boxShadow:'0 1px 3px rgba(0,0,0,0.06)', marginBottom:12 },
-  loading:      { textAlign:'center', color:'#94a3b8', padding:'40px 0' },
-  empty:        { textAlign:'center', color:'#475569', padding:'40px 0' },
-  table:        { width:'100%', borderCollapse:'collapse' },
-  th:           { padding:'10px 14px', textAlign:'left', fontSize:11, fontWeight:700, color:'#475569', background:'#f8fafc', borderBottom:'2px solid #e2e8f0', textTransform:'uppercase', letterSpacing:'0.5px' },
-  td:           { padding:'12px 14px', fontSize:14, color:'#1e293b', borderBottom:'1px solid #f1f5f9' },
-  editInput:    { padding:'5px 8px', border:'2px solid #2563eb', borderRadius:6, fontSize:13, width:80 },
-  hint:         { fontSize:12, color:'#94a3b8', textAlign:'right', marginTop:4 },
-  errorMsg:     { background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:8, padding:'10px 14px', fontSize:13, color:'#991b1b', marginBottom:16 },
-  successMsg:   { background:'#d1fae5', border:'1px solid #6ee7b7', borderRadius:8, padding:'10px 14px', fontSize:13, color:'#065f46', marginBottom:16 },
+  loading:       { textAlign:'center', color:'#94a3b8', padding:'60px 0' },
+  pageHeader:    { display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:24 },
+  pageTitle:     { margin:'0 0 4px', fontSize:22, fontWeight:700, color:'#0f172a' },
+  pageSub:       { margin:0, fontSize:13, color:'#64748b' },
+  headerRight:   { display:'flex', gap:8, alignItems:'center' },
+  monthInput:    { padding:'8px 12px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:13 },
+  refreshBtn:    { padding:'8px 12px', background:'#fff', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:14, cursor:'pointer' },
+
+  totalCard:     { background:'#0f172a', borderRadius:16, padding:'28px 32px', marginBottom:24, display:'flex', alignItems:'center', gap:24, flexWrap:'wrap' },
+  totalItem:     { flex:1, padding:'16px 20px', minWidth:160 },
+  totalValue:    { fontSize:28, fontWeight:800, color:'#f1f5f9', marginBottom:4 },
+  totalLabel:    { fontSize:13, color:'#94a3b8', fontWeight:500 },
+  totalSub:      { fontSize:12, color:'#475569', marginTop:4 },
+  totalSep:      { fontSize:28, color:'#334155', fontWeight:300 },
+
+  section:       { background:'#fff', borderRadius:12, padding:24, marginBottom:20, boxShadow:'0 1px 3px rgba(0,0,0,0.06)' },
+  sectionHeader: { display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:20 },
+  sectionTitle:  { margin:'0 0 4px', fontSize:15, fontWeight:700, color:'#0f172a' },
+  sectionSub:    { margin:0, fontSize:12, color:'#64748b' },
+  sectionTotal:  { fontSize:22, fontWeight:800, color:'#2563eb' },
+
+  tipoGrid:      { display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:20 },
+  tipoCard:      { background:'#f8fafc', borderRadius:8, padding:'12px 16px', border:'1px solid #e2e8f0' },
+  tipoNombre:    { fontSize:14, fontWeight:700, color:'#0f172a', marginBottom:4 },
+  tipoDetalle:   { fontSize:12, color:'#64748b', marginBottom:2 },
+  tipoSubtotal:  { fontSize:16, fontWeight:700, color:'#2563eb', marginTop:6 },
+
+  tableWrap:     { overflowX:'auto' },
+  table:         { width:'100%', borderCollapse:'collapse' },
+  th:            { padding:'10px 14px', textAlign:'left', fontSize:11, fontWeight:700, color:'#475569', background:'#f8fafc', borderBottom:'2px solid #e2e8f0', textTransform:'uppercase', letterSpacing:'0.5px', whiteSpace:'nowrap' },
+  td:            { padding:'11px 14px', fontSize:14, color:'#1e293b', borderBottom:'1px solid #f1f5f9' },
+  totalRow:      { background:'#f8fafc' },
+  tdTotal:       { padding:'11px 14px', fontSize:13, fontWeight:700, color:'#0f172a', borderTop:'2px solid #e2e8f0' },
+
+  resumenFinal:  { background:'#fff', borderRadius:12, padding:24, boxShadow:'0 1px 3px rgba(0,0,0,0.06)', marginBottom:20 },
+  resumenTitulo: { margin:'0 0 20px', fontSize:15, fontWeight:700, color:'#0f172a' },
+  resumenGrid:   { display:'flex', flexDirection:'column', gap:10, maxWidth:480 },
+  resumenItem:   { display:'flex', justifyContent:'space-between', alignItems:'center' },
+  resumenLabel:  { fontSize:14, color:'#475569' },
+  resumenValor:  { fontSize:16, fontWeight:700, color:'#0f172a' },
+  empty:         { color:'#94a3b8', fontSize:13, margin:'8px 0 0' },
 };

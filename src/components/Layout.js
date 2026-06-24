@@ -19,7 +19,8 @@ export default function Layout({ children, currentPage, onNavigate }) {
     { id:'dashboard',    label: user?.sector === 'mantenimiento' ? 'Mi Panel' : user?.sector === 'infraestructura' ? 'Mi Panel' : 'Estado de Tubos', icon:'⬤',  show: permisos.verDashboard },
     { id:'movimientos',  label:'Registrar Movimiento',  icon:'+',  show: permisos.hacerMovimientos },
     { id:'historial',    label:'Historial',             icon:'↔',  show: permisos.verHistorial },
-    { id:'costos',       label:'Ciclos y Costos',       icon:'$',  show: permisos.verCostos },
+    { id:'costos',       label:'Costos del mes',         icon:'$',  show: permisos.verCostos },
+    { id:'precios',      label:'Precios y Tarifas',      icon:'💲', show: permisos.editarPrecios },
     { id:'perfil',       label:'Mi Perfil',             icon:'👤', show: true },
   ].filter(i => i.show);
 

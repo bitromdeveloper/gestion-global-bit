@@ -5,15 +5,15 @@ export const SECTORES        = ['Mantenimiento', 'Infraestructura', 'Sub Base', 
 export const PERMISOS = {
   admin: {
     verDashboard: true, verMovimientos: true, verCostos: true,
-    verHistorial: true, gestionarTubos: true, hacerMovimientos: true,
+    verHistorial: true, gestionarTubos: true, hacerMovimientos: true, editarPrecios: true,
   },
   almacen: {
     verDashboard: true, verMovimientos: true, verCostos: false,
-    verHistorial: true, gestionarTubos: true, hacerMovimientos: true,
+    verHistorial: true, gestionarTubos: true, hacerMovimientos: true, editarPrecios: false,
   },
   compras: {
     verDashboard: true, verMovimientos: false, verCostos: true,
-    verHistorial: true, gestionarTubos: false, hacerMovimientos: false,
+    verHistorial: true, gestionarTubos: false, hacerMovimientos: false, editarPrecios: true,
   },
   mantenimiento: {
     verDashboard: true, verMovimientos: false, verCostos: false,

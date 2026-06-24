@@ -36,7 +36,6 @@ function AppContent() {
       case 'movimientos': return permisos.hacerMovimientos ? <Movimientos /> : null;
       case 'historial':   return permisos.verHistorial     ? <Historial />   : null;
       case 'costos':      return permisos.verCostos        ? <CiclosMensuales /> : null;
-      case 'precios':     return permisos.editarPrecios   ? <Precios />         : null;
       case 'perfil':      return <Perfil />;
       default:            return <Dashboard />;
     }
