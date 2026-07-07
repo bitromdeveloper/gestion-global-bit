@@ -2,28 +2,49 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { db } from '../lib/db';
 import { TIPOS_TUBO } from '../lib/constants';
 
+const DIAS_LIMITE_EN_USO = 30; // días máximos razonables sin devolver un tubo
+
 export default function AlertaStock() {
-  const [alertas, setAlertas]     = useState([]);
+  const [alertasStock, setAlertasStock] = useState([]);
+  const [alertasTiempo, setAlertasTiempo] = useState([]);
   const [visible, setVisible]     = useState(false);
   const [dismissed, setDismissed] = useState([]);
 
   const checkStock = useCallback(async () => {
     try {
-      const tubos = await db.getTubos();
-      const nuevasAlertas = TIPOS_TUBO.map(tipo => {
+      const [tubos, movimientos] = await Promise.all([db.getTubos(), db.getMovimientos()]);
+
+      // Stock bajo por tipo
+      const nuevasStock = TIPOS_TUBO.map(tipo => {
         const llenosEnAlmacen = tubos.filter(
           t => t.tipo === tipo && t.ubicacion === 'Almacén' && t.estado === 'Lleno'
         ).length;
         return { tipo, cantidad: llenosEnAlmacen };
       }).filter(a => a.cantidad <= 1);
 
-      setAlertas(nuevasAlertas);
+      // Tubos en uso hace demasiado tiempo sin devolver
+      const hoy = new Date();
+      const enUsoTubos = tubos.filter(t => t.estado === 'En uso');
+      const nuevasTiempo = enUsoTubos.map(t => {
+        // Buscar el último movimiento de salida de este tubo (Consumo)
+        const ultimoConsumo = movimientos
+          .filter(m => m.tubo_id === t.id && m.tipo_operacion === 'Consumo')
+          .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0];
+        if (!ultimoConsumo) return null;
+        const dias = Math.floor((hoy - new Date(ultimoConsumo.fecha)) / (1000 * 60 * 60 * 24));
+        return dias >= DIAS_LIMITE_EN_USO ? { codigo: t.codigo, tipo: t.tipo, ubicacion: t.ubicacion, dias } : null;
+      }).filter(Boolean);
 
-      // Mostrar popup si hay alertas que no fueron descartadas en esta sesión
-      const hayNuevas = nuevasAlertas.some(
-        a => !dismissed.includes(`${a.tipo}-${a.cantidad}`)
-      );
-      if (hayNuevas) setVisible(true);
+      setAlertasStock(nuevasStock);
+      setAlertasTiempo(nuevasTiempo);
+
+      // Mostrar popup si hay alertas nuevas no descartadas
+      const todasKeys = [
+        ...nuevasStock.map(a => `stock-${a.tipo}-${a.cantidad}`),
+        ...nuevasTiempo.map(a => `tiempo-${a.codigo}-${a.dias}`),
+      ];
+      const hayNuevas = todasKeys.some(k => !dismissed.includes(k));
+      if (hayNuevas && (nuevasStock.length > 0 || nuevasTiempo.length > 0)) setVisible(true);
 
     } catch {}
   }, [dismissed]);
@@ -36,15 +57,15 @@ export default function AlertaStock() {
   }, [checkStock]);
 
   const handleDismiss = () => {
-    // Marcar las actuales como vistas para no molestar hasta que cambie el stock
     setDismissed(prev => [
       ...prev,
-      ...alertas.map(a => `${a.tipo}-${a.cantidad}`)
+      ...alertasStock.map(a => `stock-${a.tipo}-${a.cantidad}`),
+      ...alertasTiempo.map(a => `tiempo-${a.codigo}-${a.dias}`),
     ]);
     setVisible(false);
   };
 
-  if (!visible || alertas.length === 0) return null;
+  if (!visible || (alertasStock.length === 0 && alertasTiempo.length === 0)) return null;
 
   return (
     <>
@@ -57,27 +78,45 @@ export default function AlertaStock() {
           <span style={s.icon}>⚠️</span>
         </div>
 
-        <h3 style={s.title}>Stock bajo en Almacén</h3>
-        <p style={s.subtitle}>
-          Los siguientes gases tienen <strong>1 o menos tubos llenos</strong> disponibles en Almacén:
-        </p>
+        <h3 style={s.title}>Atención requerida</h3>
 
-        <div style={s.alertList}>
-          {alertas.map(a => (
-            <div key={a.tipo} style={s.alertItem}>
-              <div style={s.alertTipo}>{a.tipo}</div>
-              <div style={a.cantidad === 0 ? s.alertCantidadCero : s.alertCantidad}>
-                {a.cantidad === 0
-                  ? '⛔ Sin tubos llenos'
-                  : `⚠️ Solo ${a.cantidad} tubo lleno`
-                }
-              </div>
+        {alertasStock.length > 0 && (
+          <>
+            <p style={s.subtitle}>
+              Los siguientes gases tienen <strong>1 o menos tubos llenos</strong> en Almacén:
+            </p>
+            <div style={s.alertList}>
+              {alertasStock.map(a => (
+                <div key={a.tipo} style={s.alertItem}>
+                  <div style={s.alertTipo}>{a.tipo}</div>
+                  <div style={a.cantidad === 0 ? s.alertCantidadCero : s.alertCantidad}>
+                    {a.cantidad === 0 ? '⛔ Sin tubos llenos' : `⚠️ Solo ${a.cantidad} tubo lleno`}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
+
+        {alertasTiempo.length > 0 && (
+          <>
+            <p style={s.subtitle}>
+              Los siguientes tubos están <strong>en uso hace más de {DIAS_LIMITE_EN_USO} días</strong> sin devolverse:
+            </p>
+            <div style={s.alertList}>
+              {alertasTiempo.map(a => (
+                <div key={a.codigo} style={s.alertItemTiempo}>
+                  <div style={s.alertTipo}>{a.codigo} — {a.tipo}</div>
+                  <div style={s.alertCantidadCero}>📍 {a.ubicacion} · {a.dias} días</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
 
         <p style={s.nota}>
-          Considerá solicitar reposición al proveedor.
+          {alertasStock.length > 0 && 'Considerá solicitar reposición al proveedor. '}
+          {alertasTiempo.length > 0 && 'Verificá si esos tubos siguen en uso o fueron olvidados.'}
         </p>
 
         <button style={s.btn} onClick={handleDismiss}>
@@ -120,6 +159,11 @@ const s = {
   alertItem:{
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     background: '#fffbeb', border: '1px solid #fde68a',
+    borderRadius: 10, padding: '12px 16px',
+  },
+  alertItemTiempo:{
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    background: '#fef2f2', border: '1px solid #fecaca',
     borderRadius: 10, padding: '12px 16px',
   },
   alertTipo:{ fontSize: 16, fontWeight: 800, color: '#0f172a' },

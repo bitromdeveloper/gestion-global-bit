@@ -1,5 +1,6 @@
 export const TIPOS_TUBO     = ['O2', 'Butano', 'N2', 'Atal'];
 export const UBICACIONES     = ['Almacén', 'Mantenimiento', 'Infraestructura', 'Sub Base'];
+export const ESTADOS_TUBO    = ['Lleno', 'En uso', 'Vacío', 'En poder del proveedor'];
 export const SECTORES        = ['Mantenimiento', 'Infraestructura', 'Sub Base', 'Compras', 'Admin'];
 
 export const PERMISOS = {

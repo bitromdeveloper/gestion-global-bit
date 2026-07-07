@@ -42,6 +42,25 @@ export default function Historial() {
     consumos: delMes.filter(m => m.tipo_operacion === 'Consumo' && m.tubo_tipo === tipo).length,
   })).filter(c => c.cargas + c.consumos > 0);
 
+  // ── Consumo mes a mes (últimos 6 meses) ──
+  const ultimos6Meses = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - (5 - i));
+    return d.toISOString().slice(0, 7);
+  });
+
+  const consumoMensual = ultimos6Meses.map(m => {
+    const delMesM = movimientos.filter(mov => mov.fecha?.startsWith(m));
+    return {
+      mes: m,
+      label: new Date(m + '-01').toLocaleDateString('es-AR', { month:'short', year:'2-digit' }),
+      cargas: delMesM.filter(mov => mov.tipo_operacion === 'Carga' || mov.tipo_operacion === 'Intercambio').length / 2 || 0,
+      consumos: delMesM.filter(mov => mov.tipo_operacion === 'Consumo').length,
+    };
+  });
+
+  const maxValor = Math.max(...consumoMensual.map(c => Math.max(c.cargas, c.consumos)), 1);
+
   // Filtros para la tabla
   const filtrados = delMes.filter(m => {
     if (filtroOp   !== 'Todos' && m.tipo_operacion !== filtroOp)   return false;
@@ -89,6 +108,26 @@ export default function Historial() {
           </table>
         </div>
       )}
+
+      {/* Gráfico de consumo mes a mes */}
+      <div style={s.section}>
+        <h3 style={s.sectionTitle}>Consumo mes a mes (últimos 6 meses)</h3>
+        <div style={s.chartWrap}>
+          {consumoMensual.map(c => (
+            <div key={c.mes} style={s.chartCol}>
+              <div style={s.chartBars}>
+                <div style={{ ...s.bar, ...s.barConsumo, height: `${(c.consumos / maxValor) * 100}%` }}
+                  title={`${c.consumos} consumos`} />
+              </div>
+              <div style={s.chartValue}>{c.consumos}</div>
+              <div style={s.chartLabel}>{c.label}</div>
+            </div>
+          ))}
+        </div>
+        <div style={s.chartLegend}>
+          <span style={s.legendItem}><span style={{ ...s.legendDot, background:'#059669' }} /> Consumos por sector</span>
+        </div>
+      </div>
 
       {/* Tabla de movimientos */}
       <div style={s.section}>
@@ -179,4 +218,14 @@ const s = {
   badge:        { display:'inline-flex', alignItems:'center', gap:4, padding:'3px 9px', borderRadius:99, fontSize:12, fontWeight:600 },
   user:         { fontSize:12, color:'#475569', background:'#f1f5f9', padding:'2px 8px', borderRadius:4 },
   empty:        { textAlign:'center', color:'#94a3b8', padding:'40px 0', fontSize:14 },
+  chartWrap:    { display:'flex', alignItems:'flex-end', gap:16, height:180, padding:'0 8px', marginBottom:12 },
+  chartCol:     { flex:1, display:'flex', flexDirection:'column', alignItems:'center', height:'100%', justifyContent:'flex-end' },
+  chartBars:    { display:'flex', alignItems:'flex-end', height:130, width:'100%', justifyContent:'center' },
+  bar:          { width:32, borderRadius:'6px 6px 0 0', transition:'height 0.3s' },
+  barConsumo:   { background:'#059669' },
+  chartValue:   { fontSize:13, fontWeight:700, color:'#0f172a', marginTop:8 },
+  chartLabel:   { fontSize:11, color:'#64748b', marginTop:2, textTransform:'capitalize' },
+  chartLegend:  { display:'flex', gap:16, justifyContent:'center', paddingTop:12, borderTop:'1px solid #f1f5f9' },
+  legendItem:   { display:'flex', alignItems:'center', gap:6, fontSize:12, color:'#64748b' },
+  legendDot:    { width:10, height:10, borderRadius:3, display:'inline-block' },
 };

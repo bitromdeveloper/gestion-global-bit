@@ -11,14 +11,16 @@ export default function Precios() {
 
   // Tarifas editables por tipo — se inicializan desde los tubos
   const [tarifas, setTarifas] = useState({});
+  const [movimientos, setMovimientos] = useState([]);
 
   useEffect(() => { fetchTubos(); }, []);
 
   const fetchTubos = async () => {
     setLoading(true);
     try {
-      const data = await db.getTubos();
+      const [data, movs] = await Promise.all([db.getTubos(), db.getMovimientos()]);
       setTubos(data || []);
+      setMovimientos(movs || []);
 
       // Inicializar tarifas desde el primer tubo de cada tipo
       const t = {};
@@ -72,6 +74,46 @@ export default function Precios() {
       [tipo]: { ...prev[tipo], [campo]: parseFloat(valor) || 0 }
     }));
   };
+
+  // ── Proyección anual para acuerdos marco ──
+  // Promedio de recargas por mes en base al historial (últimos 6 meses con datos)
+  const mesesConDatos = [...new Set(movimientos
+    .filter(m => m.tipo_operacion === 'Carga' || m.tipo_operacion === 'Intercambio')
+    .map(m => m.fecha?.slice(0, 7))
+  )].filter(Boolean);
+
+  const cantidadMeses = Math.max(mesesConDatos.length, 1);
+
+  const proyeccionPorTipo = TIPOS_TUBO.map(tipo => {
+    const tarifa = tarifas[tipo];
+    if (!tarifa) return null;
+    const cantidad = tubos.filter(t => t.tipo === tipo).length;
+    if (cantidad === 0) return null;
+
+    // Recargas históricas de este tipo (Carga + la mitad de Intercambio, que se registra x2)
+    const recargasHistoricas = movimientos.filter(m =>
+      m.tubo_tipo === tipo && (m.tipo_operacion === 'Carga' ||
+        (m.tipo_operacion === 'Intercambio' && m.ubicacion_destino === 'Almacén'))
+    ).length;
+
+    const recargasPromedioMes = recargasHistoricas / cantidadMeses;
+    const costoGasPorRecarga = (parseFloat(tubos.find(t => t.tipo === tipo)?.capacidad) || 0) * tarifa.precio_unitario;
+    const costoVariableMensual = recargasPromedioMes * (costoGasPorRecarga + tarifa.precio_transporte);
+    const costoFijoMensual = cantidad * tarifa.alquiler_mensual;
+    const costoMensualTotal = costoFijoMensual + costoVariableMensual;
+
+    return {
+      tipo, cantidad,
+      recargasPromedioMes,
+      costoFijoMensual,
+      costoVariableMensual,
+      costoMensualTotal,
+      costoAnual: costoMensualTotal * 12,
+    };
+  }).filter(Boolean);
+
+  const totalAnualProyectado = proyeccionPorTipo.reduce((sum, p) => sum + p.costoAnual, 0);
+  const totalMensualProyectado = proyeccionPorTipo.reduce((sum, p) => sum + p.costoMensualTotal, 0);
 
   if (loading) return <div style={s.loading}>Cargando...</div>;
 
@@ -188,6 +230,50 @@ export default function Precios() {
         </div>
       </div>
 
+      {/* Proyección anual para acuerdos marco */}
+      <div style={s.proyeccionCard}>
+        <div style={s.proyeccionHeader}>
+          <div>
+            <h3 style={s.proyeccionTitulo}>Proyección anual — Acuerdos marco</h3>
+            <p style={s.proyeccionSub}>
+              Estimado en base a los precios actuales y el promedio histórico de recargas
+              {cantidadMeses > 1 ? ` (${cantidadMeses} meses de datos)` : ' (datos limitados, ajustará con más historial)'}
+            </p>
+          </div>
+        </div>
+
+        <table style={s.table}>
+          <thead><tr>
+            {['Tipo', 'Tubos', 'Recargas/mes (prom.)', 'Costo fijo/mes', 'Costo variable/mes', 'Total/mes', 'Proyección anual'].map(h => (
+              <th key={h} style={s.th}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {proyeccionPorTipo.map(p => (
+              <tr key={p.tipo}>
+                <td style={{ ...s.td, fontWeight:700 }}>{p.tipo}</td>
+                <td style={s.td}>{p.cantidad}</td>
+                <td style={s.td}>{p.recargasPromedioMes.toFixed(1)}</td>
+                <td style={s.td}>${p.costoFijoMensual.toFixed(2)}</td>
+                <td style={s.td}>${p.costoVariableMensual.toFixed(2)}</td>
+                <td style={{ ...s.td, fontWeight:600 }}>${p.costoMensualTotal.toFixed(2)}</td>
+                <td style={{ ...s.td, fontWeight:700, color:'#2563eb' }}>${p.costoAnual.toFixed(2)}</td>
+              </tr>
+            ))}
+            <tr style={{ background:'#f8fafc' }}>
+              <td style={{ ...s.td, fontWeight:800, borderTop:'2px solid #e2e8f0' }} colSpan={5}>TOTAL PROYECTADO</td>
+              <td style={{ ...s.td, fontWeight:800, borderTop:'2px solid #e2e8f0' }}>${totalMensualProyectado.toFixed(2)}</td>
+              <td style={{ ...s.td, fontWeight:800, color:'#2563eb', fontSize:15, borderTop:'2px solid #e2e8f0' }}>${totalAnualProyectado.toFixed(2)}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div style={s.proyeccionNota}>
+          Esta proyección sirve como referencia para negociar acuerdos marco con el proveedor.
+          Se recalcula automáticamente con cada cambio de precio y con más historial de recargas.
+        </div>
+      </div>
+
       <div style={s.nota}>
         <strong>Nota:</strong> Al guardar, los nuevos precios se aplican a todos los tubos de ese tipo.
         Los cálculos de costos del mes actual se actualizarán automáticamente.
@@ -226,4 +312,12 @@ const s = {
   successMsg:    { background:'#d1fae5', border:'1px solid #6ee7b7', borderRadius:8, padding:'10px 16px', fontSize:13, color:'#065f46', marginBottom:16 },
   errorMsg:      { background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:8, padding:'10px 16px', fontSize:13, color:'#991b1b', marginBottom:16 },
   nota:          { background:'#fef9c3', border:'1px solid #fde68a', borderRadius:8, padding:'12px 16px', fontSize:13, color:'#713f12' },
+  proyeccionCard:   { background:'#fff', borderRadius:12, padding:24, marginBottom:20, boxShadow:'0 1px 3px rgba(0,0,0,0.06)' },
+  proyeccionHeader: { marginBottom:16 },
+  proyeccionTitulo: { margin:'0 0 4px', fontSize:15, fontWeight:700, color:'#0f172a' },
+  proyeccionSub:    { margin:0, fontSize:12, color:'#64748b' },
+  proyeccionNota:   { fontSize:12, color:'#94a3b8', marginTop:16, fontStyle:'italic' },
+  table:            { width:'100%', borderCollapse:'collapse' },
+  th:               { padding:'10px 12px', textAlign:'left', fontSize:11, fontWeight:700, color:'#475569', background:'#f8fafc', borderBottom:'2px solid #e2e8f0', textTransform:'uppercase', letterSpacing:'0.5px', whiteSpace:'nowrap' },
+  td:               { padding:'10px 12px', fontSize:13, color:'#1e293b', borderBottom:'1px solid #f1f5f9' },
 };

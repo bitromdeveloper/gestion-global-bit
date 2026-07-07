@@ -13,6 +13,15 @@ export const db = {
     return data;
   },
 
+  // Todos los tubos alguna vez registrados (activos e inactivos) para lista de intercambio
+  getTodosLosTubos: async () => {
+    const { data, error } = await supabase
+      .from('tubos').select('*')
+      .order('tipo').order('codigo');
+    if (error) throw new Error(error.message);
+    return data;
+  },
+
   crearTubo: async (tubo) => {
     const { data, error } = await supabase
       .from('tubos').insert({ ...tubo, activo: true }).select().single();
@@ -48,51 +57,167 @@ export const db = {
     return data;
   },
 
-  // CARGA: vacío → lleno (Almacén recibe carga del proveedor)
-  registrarCarga: async (tubo_id, usuario) => {
-    const { data: tubo } = await supabase.from('tubos').select('*').eq('id', tubo_id).single();
-    if (!tubo) throw new Error('Tubo no encontrado');
-    if (tubo.estado !== 'Vacío') throw new Error('El tubo ya está lleno');
-    if (tubo.ubicacion !== 'Almacén') throw new Error('El tubo debe estar en Almacén para cargarlo');
+  // INTERCAMBIO CON PROVEEDOR: sale un vacío, entra un lleno (1 a 1)
+  // tuboSaleId: tubo vacío que se va con el proveedor
+  // tuboEntraId: tubo lleno que llega (ya existente en sistema) o null si es nuevo
+  // tuboNuevoData: datos del tubo nuevo si no existe en sistema
+  registrarIntercambio: async (tuboSaleId, tuboEntraId, tuboNuevoData, usuario) => {
+    const hoy = new Date().toISOString().split('T')[0];
 
-    await supabase.from('tubos').update({ estado: 'Lleno', updated_at: new Date().toISOString() }).eq('id', tubo_id);
+    // 1. Marcar el tubo que sale como "En poder del proveedor" y desactivarlo
+    const { data: tuboSale } = await supabase.from('tubos').select('*').eq('id', tuboSaleId).single();
+    if (!tuboSale) throw new Error('Tubo saliente no encontrado');
+    if (tuboSale.estado !== 'Vacío') throw new Error('El tubo que sale debe estar Vacío');
 
-    await supabase.from('movimientos').insert({
-      tipo_operacion: 'Carga',
-      tubo_id, tubo_codigo: tubo.codigo, tubo_tipo: tubo.tipo,
-      ubicacion_origen: 'Almacén', ubicacion_destino: 'Almacén',
-      estado_anterior: 'Vacío', estado_nuevo: 'Lleno',
-      usuario_registra: usuario,
-    });
+    await supabase.from('tubos').update({
+      estado: 'En poder del proveedor',
+      activo: false,
+      updated_at: new Date().toISOString(),
+    }).eq('id', tuboSaleId);
+
+    // 2. Activar o crear el tubo que entra
+    let tuboEntra;
+    if (tuboEntraId) {
+      // Tubo conocido que vuelve del proveedor
+      const { data } = await supabase.from('tubos').select('*').eq('id', tuboEntraId).single();
+      if (!data) throw new Error('Tubo entrante no encontrado');
+      await supabase.from('tubos').update({
+        estado: 'Lleno',
+        activo: true,
+        ubicacion: 'Almacén',
+        en_proveedor: false,
+        updated_at: new Date().toISOString(),
+      }).eq('id', tuboEntraId);
+      tuboEntra = data;
+    } else {
+      // Tubo nuevo que nunca estuvo en el sistema
+      const { data, error } = await supabase.from('tubos').insert({
+        ...tuboNuevoData,
+        estado: 'Lleno',
+        activo: true,
+        ubicacion: 'Almacén',
+        en_proveedor: false,
+        fecha_entrada: hoy,
+      }).select().single();
+      if (error) throw new Error(error.message);
+      tuboEntra = data;
+    }
+
+    // 3. Registrar ambos movimientos
+    await supabase.from('movimientos').insert([
+      {
+        tipo_operacion: 'Intercambio',
+        tubo_id: tuboSaleId,
+        tubo_codigo: tuboSale.codigo,
+        tubo_tipo: tuboSale.tipo,
+        ubicacion_origen: 'Almacén',
+        ubicacion_destino: 'Proveedor',
+        estado_anterior: 'Vacío',
+        estado_nuevo: 'En poder del proveedor',
+        observaciones: `Intercambio — entra ${tuboEntra.codigo}`,
+        usuario_registra: usuario,
+        fecha: hoy,
+      },
+      {
+        tipo_operacion: 'Intercambio',
+        tubo_id: tuboEntra.id,
+        tubo_codigo: tuboEntra.codigo,
+        tubo_tipo: tuboEntra.tipo,
+        ubicacion_origen: 'Proveedor',
+        ubicacion_destino: 'Almacén',
+        estado_anterior: 'En poder del proveedor',
+        estado_nuevo: 'Lleno',
+        observaciones: `Intercambio — sale ${tuboSale.codigo}`,
+        usuario_registra: usuario,
+        fecha: hoy,
+      },
+    ]);
+
+    return { tuboSale, tuboEntra };
   },
 
-  // CONSUMO: Almacén → Mto/Infra/SubBase (solo llenos pedidos por ese sector)
+  // ENTREGA A SECTOR: Almacén → sector, con o sin devolución de vacío
+  registrarEntregaConDevolucion: async ({ tuboLlenoId, destino, tuboVacioId, sinDevolucion, usuario }) => {
+    const hoy = new Date().toISOString().split('T')[0];
+
+    const { data: tuboLleno } = await supabase.from('tubos').select('*').eq('id', tuboLlenoId).single();
+    if (!tuboLleno) throw new Error('Tubo no encontrado');
+    if (tuboLleno.estado !== 'Lleno') throw new Error('El tubo debe estar Lleno');
+    if (tuboLleno.ubicacion !== 'Almacén') throw new Error('El tubo debe estar en Almacén');
+
+    // Mover tubo lleno al sector
+    await supabase.from('tubos').update({
+      ubicacion: destino,
+      estado: 'En uso',
+      updated_at: new Date().toISOString(),
+    }).eq('id', tuboLlenoId);
+
+    await supabase.from('movimientos').insert({
+      tipo_operacion: 'Consumo',
+      tubo_id: tuboLlenoId,
+      tubo_codigo: tuboLleno.codigo,
+      tubo_tipo: tuboLleno.tipo,
+      ubicacion_origen: 'Almacén',
+      ubicacion_destino: destino,
+      estado_anterior: 'Lleno',
+      estado_nuevo: 'En uso',
+      usuario_registra: usuario,
+      fecha: hoy,
+    });
+
+    // Si recibe vacío a cambio
+    if (!sinDevolucion && tuboVacioId) {
+      const { data: tuboVacio } = await supabase.from('tubos').select('*').eq('id', tuboVacioId).single();
+      if (tuboVacio) {
+        await supabase.from('tubos').update({
+          ubicacion: 'Almacén',
+          estado: 'Vacío',
+          updated_at: new Date().toISOString(),
+        }).eq('id', tuboVacioId);
+
+        await supabase.from('movimientos').insert({
+          tipo_operacion: 'Devolución',
+          tubo_id: tuboVacioId,
+          tubo_codigo: tuboVacio.codigo,
+          tubo_tipo: tuboVacio.tipo,
+          ubicacion_origen: destino,
+          ubicacion_destino: 'Almacén',
+          estado_anterior: 'En uso',
+          estado_nuevo: 'Vacío',
+          usuario_registra: usuario,
+          fecha: hoy,
+        });
+      }
+    }
+  },
+
+  // CONSUMO legacy (por si se usa en algún lugar)
   registrarConsumo: async (tubo_id, destino, usuario) => {
     const { data: tubo } = await supabase.from('tubos').select('*').eq('id', tubo_id).single();
     if (!tubo) throw new Error('Tubo no encontrado');
     if (tubo.estado !== 'Lleno') throw new Error('Solo se pueden consumir tubos llenos');
     if (tubo.ubicacion !== 'Almacén') throw new Error('El tubo debe estar en Almacén');
-    if (tubo.pedido_por && tubo.pedido_por !== destino) throw new Error(`Este tubo fue pedido por ${tubo.pedido_por}, no por ${destino}`);
 
     await supabase.from('tubos').update({
-      ubicacion: destino, updated_at: new Date().toISOString()
+      ubicacion: destino, estado: 'En uso', updated_at: new Date().toISOString()
     }).eq('id', tubo_id);
 
     await supabase.from('movimientos').insert({
       tipo_operacion: 'Consumo',
       tubo_id, tubo_codigo: tubo.codigo, tubo_tipo: tubo.tipo,
       ubicacion_origen: 'Almacén', ubicacion_destino: destino,
-      estado_anterior: 'Lleno', estado_nuevo: 'Lleno',
+      estado_anterior: 'Lleno', estado_nuevo: 'En uso',
       usuario_registra: usuario,
+      fecha: new Date().toISOString().split('T')[0],
     });
   },
 
-  // DEVOLUCIÓN: Mto/Infra → Almacén (llega automáticamente vacío)
+  // DEVOLUCIÓN: sector → Almacén (vacío)
   registrarDevolucion: async (tubo_id, sector, usuario) => {
     const { data: tubo } = await supabase.from('tubos').select('*').eq('id', tubo_id).single();
     if (!tubo) throw new Error('Tubo no encontrado');
     if (tubo.ubicacion === 'Almacén') throw new Error('El tubo ya está en Almacén');
-    if (tubo.ubicacion !== sector) throw new Error(`El tubo no está en ${sector}`);
+    if (sector && tubo.ubicacion !== sector) throw new Error(`El tubo no está en ${sector}`);
 
     await supabase.from('tubos').update({
       ubicacion: 'Almacén', estado: 'Vacío',
@@ -103,8 +228,9 @@ export const db = {
       tipo_operacion: 'Devolución',
       tubo_id, tubo_codigo: tubo.codigo, tubo_tipo: tubo.tipo,
       ubicacion_origen: tubo.ubicacion, ubicacion_destino: 'Almacén',
-      estado_anterior: 'Lleno', estado_nuevo: 'Vacío',
+      estado_anterior: 'En uso', estado_nuevo: 'Vacío',
       usuario_registra: usuario,
+      fecha: new Date().toISOString().split('T')[0],
     });
   },
 
@@ -121,11 +247,12 @@ export const db = {
       estado_nuevo: 'Lleno',
       pedido_por: tuboData.pedido_por,
       usuario_registra: usuario,
+      fecha: new Date().toISOString().split('T')[0],
     });
     return tubo;
   },
 
-  // BAJA: tubo retirado del sistema
+  // BAJA: tubo retirado permanentemente del sistema
   registrarBaja: async (tubo_id, observaciones, usuario) => {
     const { data: tubo } = await supabase.from('tubos').select('*').eq('id', tubo_id).single();
     if (!tubo) throw new Error('Tubo no encontrado');
@@ -141,10 +268,11 @@ export const db = {
       estado_anterior: tubo.estado,
       observaciones,
       usuario_registra: usuario,
+      fecha: new Date().toISOString().split('T')[0],
     });
   },
 
-  // ─── HISTORIAL / CONSUMO ──────────────────────────────────────────────────
+  // ─── HISTORIAL ────────────────────────────────────────────────────────────
 
   getResumenMensual: async (mes) => {
     const { data, error } = await supabase
@@ -157,30 +285,11 @@ export const db = {
     return data;
   },
 
-  // ─── CICLOS ───────────────────────────────────────────────────────────────
-
   getCiclos: async (mes) => {
     const { data, error } = await supabase
       .from('ciclos_mensuales').select('*').eq('mes', mes).order('tipo_tubo');
     if (error) throw new Error(error.message);
     return data;
-  },
-
-  iniciarCiclo: async (mes) => {
-    const TIPOS = ['O2', 'Butano', 'N2', 'Atal'];
-    for (const tipo of TIPOS) {
-      const { data: tubos } = await supabase
-        .from('tubos').select('alquiler_mensual, precio_transporte')
-        .eq('tipo', tipo).eq('activo', true);
-      if (!tubos || tubos.length === 0) continue;
-      await supabase.from('ciclos_mensuales').upsert({
-        mes, tipo_tubo: tipo,
-        cantidad_stock: tubos.length,
-        precio_alquiler_mensual: parseFloat(tubos[0]?.alquiler_mensual) || 0,
-        precio_transporte_tubo: parseFloat(tubos[0]?.precio_transporte) || 0,
-        cambios_realizados: 0,
-      }, { onConflict: 'mes,tipo_tubo', ignoreDuplicates: true });
-    }
   },
 
   actualizarCiclo: async ({ id, ...campos }) => {
