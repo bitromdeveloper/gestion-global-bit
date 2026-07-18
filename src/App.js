@@ -12,18 +12,16 @@ import Historial from './pages/Historial';
 import CiclosMensuales from './pages/CiclosMensuales';
 import Precios from './pages/Precios';
 import Perfil from './pages/Perfil';
+import CilindrosApp from './cilindros/CilindrosApp';
+import PanelSuperadmin from './cilindros/PanelSuperadmin';
 
-function AppContent() {
-  const { user, loading } = useAuth();
+// ============================================================================
+// GASES — esto es exactamente lo que antes era "AppContent" en el App.js viejo.
+// No se tocó ninguna línea de lógica, solo se renombró.
+// ============================================================================
+function GasesApp() {
+  const { user } = useAuth();
   const [currentPage, setCurrentPage] = useState('dashboard');
-
-  if (loading) return (
-    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'#0f172a' }}>
-      <div style={{ color:'#60a5fa', fontSize:16 }}>Cargando...</div>
-    </div>
-  );
-
-  if (!user) return <LoginPage />;
 
   const permisos = PERMISOS[user.sector] || {};
 
@@ -49,6 +47,33 @@ function AppContent() {
         {renderPage()}
       </Layout>
     </>
+  );
+}
+
+// ============================================================================
+// PUNTO DE ENTRADA ÚNICO
+// Un solo LoginPage. Después de loguear, decide a dónde mandar a cada uno
+// según user.rol / user.modulo (vienen de public.perfiles).
+// ============================================================================
+function AppContent() {
+  const { user, loading } = useAuth();
+
+  if (loading) return (
+    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'#0f172a' }}>
+      <div style={{ color:'#60a5fa', fontSize:16 }}>Cargando...</div>
+    </div>
+  );
+
+  if (!user) return <LoginPage />;
+
+  if (user.rol === 'superadmin')   return <PanelSuperadmin />;
+  if (user.modulo === 'cilindros') return <CilindrosApp />;
+  if (user.modulo === 'gases')     return <GasesApp />;
+
+  return (
+    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'#0f172a', color:'#fff' }}>
+      Tu usuario no tiene un módulo asignado. Contactá al administrador.
+    </div>
   );
 }
 

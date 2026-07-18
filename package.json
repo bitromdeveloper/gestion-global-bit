@@ -1,6 +1,6 @@
 {
-  "name": "tubos-suministro-bit",
-  "version": "2.0.0",
+  "name": "gestion-global-bit",
+  "version": "3.0.0",
   "private": true,
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

@@ -1,0 +1,60 @@
+USUARIOS Y CONTRASEÑAS — gestion-global-bit
+==============================================
+Para loguear, escribir solo el USUARIO (sin @nada) + la contraseña.
+Todas las contraseñas siguen el patrón: usuario + ".01"
+Se pueden cambiar desde "Mi Perfil" una vez logueado.
+
+--------------------------------------------------
+MÓDULO GASES
+--------------------------------------------------
+Usuario:      admin.bra
+Contraseña:   admin.bra.01
+Rol:          admin
+
+Usuario:      almacen.bra
+Contraseña:   almacen.bra.01
+Rol:          almacen
+
+Usuario:      compras.bra
+Contraseña:   compras.bra.01
+Rol:          compras
+
+Usuario:      infraestructura.bra
+Contraseña:   infraestructura.bra.01
+Rol:          infraestructura
+
+Usuario:      mantenimiento.bra
+Contraseña:   mantenimiento.bra.01
+Rol:          mantenimiento
+
+--------------------------------------------------
+MÓDULO CILINDROS
+--------------------------------------------------
+Usuario:      admin.cilindros
+Contraseña:   admin.cilindros.01
+Rol:          admin
+
+Usuario:      almacen.cilindros
+Contraseña:   almacen.cilindros.01
+Rol:          almacen
+
+Usuario:      compras.cilindros
+Contraseña:   compras.cilindros.01
+Rol:          compras
+
+Usuario:      mantenimiento.cilindros
+Contraseña:   mantenimiento.cilindros.01
+Rol:          mantenimiento
+
+--------------------------------------------------
+SUPERADMIN (ve ambos módulos)
+--------------------------------------------------
+Usuario:      bitrom
+Contraseña:   bitrom.01
+Rol:          superadmin
+
+==============================================
+NOTA: por atrás, cada usuario se guarda como
+"usuario@bitrom.local" en Supabase Auth, pero
+en la pantalla de login solo se tipea "usuario".
+==============================================
