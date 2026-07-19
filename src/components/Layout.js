@@ -8,6 +8,7 @@ const SECTOR_COLOR = {
   compras:        { bg:'#059669', light:'#d1fae5', text:'Compras' },
   mantenimiento:  { bg:'#d97706', light:'#fef3c7', text:'Mantenimiento' },
   infraestructura:{ bg:'#dc2626', light:'#fee2e2', text:'Infraestructura' },
+  superadmin:     { bg:'#1e293b', light:'#e2e8f0', text:'Superadmin' },
 };
 
 export default function Layout({ children, currentPage, onNavigate }) {

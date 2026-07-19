@@ -1,77 +1,26 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../components/AuthContext';
+import styles from './styles';
+import { parseDate, esInactivo, diasDesde } from './helpers';
+import { Stat } from './SmallComponents';
+import UnidadesTab from './UnidadesTab';
+import VistaCilindros from './VistaCilindros';
 
 // ============================================================================
-// Igual que antes, pero en vez de traer los datos embebidos en el archivo,
-// los lee en vivo de Supabase (cilindros.catalogo + cilindros.reparaciones).
-// Cualquier cambio en la base (nuevas reparaciones, correcciones de
-// descripciones, etc.) se refleja solo, sin tocar este componente.
+// Orquestador del módulo Cilindros: trae los datos de Supabase, calcula
+// todo lo derivado (grupos, filtros, estado actual, etc.) y arma un solo
+// objeto "vm" que le pasa a VistaCilindros. El header, las pestañas y el
+// modal de cambiar contraseña quedan acá porque son compartidos por las
+// dos pestañas (Cilindros / Unidades).
 // ============================================================================
-
-const STATUS_STYLE = {
-  'Reparado - Recibido en Almacén': { color: '#4FA98C', bg: 'rgba(79,169,140,0.14)', label: 'Reparado — en almacén', dot: '#4FA98C' },
-  'En poder del proveedor (en reparación)': { color: '#E8871E', bg: 'rgba(232,135,30,0.14)', label: 'En poder del proveedor', dot: '#E8871E' },
-  'SIN_REPARACIONES': { color: '#5A6068', bg: 'rgba(90,96,104,0.12)', label: 'Sin reparaciones registradas', dot: '#5A6068' },
-};
-
-const ESTADO_OPERATIVO_STYLE = {
-  en_uso:          { label: 'En uso',                    color: '#5B7A99', bg: 'rgba(91,122,153,0.16)' },
-  en_stock:        { label: 'En stock (reparado)',        color: '#4FA98C', bg: 'rgba(79,169,140,0.16)' },
-  en_proveedor:    { label: 'En poder del proveedor',     color: '#E8871E', bg: 'rgba(232,135,30,0.16)' },
-  roto_en_almacen: { label: 'Roto — en almacén',          color: '#C0392B', bg: 'rgba(192,57,43,0.16)' },
-  baja:            { label: 'Dado de baja',               color: '#5A6068', bg: 'rgba(90,96,104,0.16)' },
-};
-
-function parseDate(s) {
-  if (!s) return null;
-  return new Date(s);
-}
-
-function fmtMoney(n, currency) {
-  if (n === null || n === undefined || n === '') return '—';
-  const v = Number(n);
-  return (currency === 'USD' ? 'US$ ' : '$ ') + v.toLocaleString('es-AR', { maximumFractionDigits: 0 });
-}
-
-function fmtDate(s) {
-  if (!s) return '—';
-  const d = new Date(s);
-  if (isNaN(d)) return s;
-  return d.toLocaleDateString('es-AR');
-}
-
-function diasDesde(s) {
-  if (!s) return null;
-  const d = new Date(s);
-  if (isNaN(d)) return null;
-  const ms = Date.now() - d.getTime();
-  return Math.floor(ms / (1000 * 60 * 60 * 24));
-}
-
-function fmtHaceTiempo(s) {
-  const dias = diasDesde(s);
-  if (dias === null) return '';
-  if (dias < 0) return '';
-  if (dias === 0) return 'hoy';
-  if (dias === 1) return 'ayer';
-  if (dias < 30) return `hace ${dias} días`;
-  if (dias < 365) return `hace ${Math.floor(dias / 30)} ${Math.floor(dias / 30) === 1 ? 'mes' : 'meses'}`;
-  return `hace ${Math.floor(dias / 365)} ${Math.floor(dias / 365) === 1 ? 'año' : 'años'}`;
-}
-
-const ANIOS_SIN_ACTIVIDAD_PARA_BAJA = 4;
-
-function esInactivo(fechaUltimaOc) {
-  if (!fechaUltimaOc) return true; // nunca tuvo ninguna OC
-  const dias = diasDesde(fechaUltimaOc);
-  return dias === null || dias > ANIOS_SIN_ACTIVIDAD_PARA_BAJA * 365;
-}
 
 export default function CilindrosApp() {
   const { user, logout, changePassword } = useAuth();
   const esAdmin = user?.rol === 'admin' || user?.rol === 'superadmin';
   const puedeDarBaja = esAdmin || user?.rol === 'almacen';
+  const puedeRegistrarMovimiento = esAdmin || user?.rol === 'mantenimiento';
+  const puedeRegistrarReparacion = esAdmin || user?.rol === 'compras';
 
   const [menuUsuarioAbierto, setMenuUsuarioAbierto] = useState(false);
   const [mostrarCambiarPass, setMostrarCambiarPass] = useState(false);
@@ -97,8 +46,12 @@ export default function CilindrosApp() {
   const [catalogo, setCatalogo] = useState([]);
   const [reparaciones, setReparaciones] = useState([]);
   const [movimientos, setMovimientos] = useState([]);
+  const [unidades, setUnidades] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  const [vistaPrincipal, setVistaPrincipal] = useState('cilindros'); // 'cilindros' | 'unidades'
+  const puedeGestionarUnidades = esAdmin || user?.rol === 'mantenimiento';
 
   useEffect(() => {
     cargarDatos();
@@ -126,10 +79,11 @@ export default function CilindrosApp() {
     setLoading(true);
     setError(null);
     try {
-      const [cat, rep, mov] = await Promise.all([
+      const [cat, rep, mov, uni] = await Promise.all([
         fetchTodo('catalogo'),
         fetchTodo('reparaciones'),
         fetchTodo('movimientos'),
+        fetchTodo('unidades'),
       ]);
       setCatalogo(cat);
       // Filtro de seguridad: una reparación sin OC definitiva no es una reparación
@@ -137,6 +91,7 @@ export default function CilindrosApp() {
       // base, pero esto evita que vuelvan a colarse si alguien carga una a mano.
       setReparaciones((rep || []).filter((r) => !!r.oc_definitiva));
       setMovimientos(mov || []);
+      setUnidades(uni || []);
     } catch (e) {
       console.error('Error cargando datos de cilindros:', e);
       setError('No se pudieron cargar los datos. Reintentá en unos segundos.');
@@ -225,12 +180,17 @@ export default function CilindrosApp() {
   }, [groups, ordenSidebar]);
 
   const [query, setQuery] = useState('');
+
+  // ---- Buscador global (siempre visible, no depende de estar dentro de un grupo) ----
+  const [busquedaGlobal, setBusquedaGlobal] = useState('');
+  const [busquedaGlobalAbierta, setBusquedaGlobalAbierta] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [selectedCode, setSelectedCode] = useState(null);
   const [codeQuery, setCodeQuery] = useState('');
   const [fechaDesde, setFechaDesde] = useState('');
   const [fechaHasta, setFechaHasta] = useState('');
   const [ocultarInactivos, setOcultarInactivos] = useState(false);
+  const [filtroEstadoOperativo, setFiltroEstadoOperativo] = useState('todos'); // 'todos' | 'en_uso' | 'en_stock' | 'en_proveedor' | 'roto_en_almacen' | 'baja'
 
   const filteredGroups = useMemo(() => {
     if (!query.trim()) return groupsOrdenados;
@@ -271,7 +231,7 @@ export default function CilindrosApp() {
     }));
   }, [activeGroup]);
 
-  const codesInGroupFiltrados = useMemo(() => {
+  const codesInGroupFiltradosBase = useMemo(() => {
     let filtrados = codesInGroup;
     if (codeQuery.trim()) {
       const q = codeQuery.trim().toUpperCase();
@@ -328,12 +288,21 @@ export default function CilindrosApp() {
 
   // ---- Registrar movimiento (solo admin) ----
   const [mostrarFormMovimiento, setMostrarFormMovimiento] = useState(false);
-  const [formMovimiento, setFormMovimiento] = useState({ estado: 'en_stock', proveedor: '', observaciones: '' });
+  const [formMovimiento, setFormMovimiento] = useState({ estado: 'en_stock', proveedor: '', observaciones: '', unidad_id: '' });
   const [guardandoMovimiento, setGuardandoMovimiento] = useState(false);
 
   // ---- Dar de baja (admin + almacén) ----
   const hoyISO = () => new Date().toISOString().slice(0, 10);
   const [mostrarFormBaja, setMostrarFormBaja] = useState(false);
+
+  // ---- Registrar reparación nueva (rol compras + admin) ----
+  const FORM_REPARACION_INICIAL = {
+    fecha_solicitud: hoyISO(), oc_definitiva: '', proveedor: '',
+    precio_unitario: '', precio_total: '', moneda: 'ARS',
+  };
+  const [mostrarFormReparacion, setMostrarFormReparacion] = useState(false);
+  const [formReparacion, setFormReparacion] = useState(FORM_REPARACION_INICIAL);
+  const [guardandoReparacion, setGuardandoReparacion] = useState(false);
   const [formBaja, setFormBaja] = useState({ fecha: hoyISO(), motivo: '' });
   const [guardandoBaja, setGuardandoBaja] = useState(false);
   const [cancelandoBaja, setCancelandoBaja] = useState(false);
@@ -360,25 +329,90 @@ export default function CilindrosApp() {
   }
 
   async function registrarMovimiento(codigo) {
-    setGuardandoMovimiento(true);
-    const { error } = await supabase
-      .schema('cilindros')
-      .from('movimientos')
-      .insert({
-        codigo,
-        estado: formMovimiento.estado,
-        proveedor: formMovimiento.estado === 'en_proveedor' ? formMovimiento.proveedor : null,
-        observaciones: formMovimiento.observaciones || null,
-        registrado_por: user?.id || null,
-      });
-    setGuardandoMovimiento(false);
-    if (error) {
-      alert('Error al registrar el movimiento: ' + error.message);
+    if (formMovimiento.estado === 'en_uso' && !formMovimiento.unidad_id) {
+      alert('Elegí a qué unidad se le asigna el cilindro.');
       return;
     }
-    setMostrarFormMovimiento(false);
-    setFormMovimiento({ estado: 'en_stock', proveedor: '', observaciones: '' });
-    await cargarDatos();
+    setGuardandoMovimiento(true);
+    try {
+      const { data, error } = await supabase
+        .schema('cilindros')
+        .from('movimientos')
+        .insert({
+          codigo,
+          estado: formMovimiento.estado,
+          proveedor: formMovimiento.estado === 'en_proveedor' ? formMovimiento.proveedor : null,
+          unidad_id: formMovimiento.estado === 'en_uso' ? formMovimiento.unidad_id : null,
+          observaciones: formMovimiento.observaciones || null,
+          registrado_por: user?.id || null,
+        })
+        .select();
+
+      if (error) {
+        console.error('Error de Supabase al registrar movimiento:', error);
+        alert('Error al registrar el movimiento: ' + error.message);
+        return;
+      }
+      if (!data || data.length === 0) {
+        console.error('El insert del movimiento no devolvió filas — posible bloqueo de RLS.');
+        alert('No se pudo registrar el movimiento: el servidor no confirmó el cambio. Revisá la consola.');
+        return;
+      }
+      setMostrarFormMovimiento(false);
+      setFormMovimiento({ estado: 'en_stock', proveedor: '', observaciones: '', unidad_id: '' });
+      await cargarDatos();
+    } catch (e) {
+      console.error('Excepción al registrar movimiento:', e);
+      alert('Ocurrió un error inesperado. Mirá la consola para más detalle.');
+    } finally {
+      setGuardandoMovimiento(false);
+    }
+  }
+
+  async function registrarReparacion(codigo) {
+    if (!formReparacion.oc_definitiva.trim()) {
+      alert('La OC definitiva es obligatoria.');
+      return;
+    }
+    setGuardandoReparacion(true);
+    try {
+      const { data, error } = await supabase
+        .schema('cilindros')
+        .from('reparaciones')
+        .insert({
+          codigo,
+          fecha_solicitud: formReparacion.fecha_solicitud,
+          oc_definitiva: formReparacion.oc_definitiva,
+          proveedor: formReparacion.proveedor || null,
+          precio_unitario: formReparacion.precio_unitario ? Number(formReparacion.precio_unitario) : null,
+          precio_total: formReparacion.precio_total ? Number(formReparacion.precio_total) : null,
+          moneda: formReparacion.moneda || 'ARS',
+          // Recién se manda a reparar, todavía no volvió — remito/factura se
+          // completan solos cuando alguien registre el movimiento "En stock".
+          estado_reparacion: 'En poder del proveedor (en reparación)',
+          estado_final_rc: 'Con OC Definitiva',
+        })
+        .select();
+
+      if (error) {
+        console.error('Error de Supabase al registrar la reparación:', error);
+        alert('Error al registrar la reparación: ' + error.message);
+        return;
+      }
+      if (!data || data.length === 0) {
+        console.error('El insert de la reparación no devolvió filas — posible bloqueo de RLS.');
+        alert('No se pudo registrar la reparación: el servidor no confirmó el cambio. Revisá la consola.');
+        return;
+      }
+      setMostrarFormReparacion(false);
+      setFormReparacion(FORM_REPARACION_INICIAL);
+      await cargarDatos();
+    } catch (e) {
+      console.error('Excepción al registrar la reparación:', e);
+      alert('Ocurrió un error inesperado. Mirá la consola para más detalle.');
+    } finally {
+      setGuardandoReparacion(false);
+    }
   }
 
   async function darDeBaja(codigo) {
@@ -465,12 +499,176 @@ export default function CilindrosApp() {
     }
   }
 
+  // ---- Corregir un movimiento cargado mal (solo admin) ----
+  const [editandoMovimientoId, setEditandoMovimientoId] = useState(null);
+  const [formEditarMovimiento, setFormEditarMovimiento] = useState({ estado: '', proveedor: '', observaciones: '', fecha: '' });
+  const [guardandoEditarMovimiento, setGuardandoEditarMovimiento] = useState(false);
+
+  function abrirEditarMovimiento(m) {
+    setEditandoMovimientoId(m.id);
+    setFormEditarMovimiento({
+      estado: m.estado,
+      proveedor: m.proveedor || '',
+      observaciones: m.observaciones || '',
+      fecha: m.fecha ? m.fecha.slice(0, 10) : hoyISO(),
+    });
+  }
+
+  async function guardarEditarMovimiento() {
+    setGuardandoEditarMovimiento(true);
+    try {
+      const { data, error } = await supabase
+        .schema('cilindros')
+        .from('movimientos')
+        .update({
+          estado: formEditarMovimiento.estado,
+          proveedor: formEditarMovimiento.estado === 'en_proveedor' ? formEditarMovimiento.proveedor : null,
+          observaciones: formEditarMovimiento.observaciones || null,
+          fecha: new Date(formEditarMovimiento.fecha + 'T12:00:00').toISOString(),
+        })
+        .eq('id', editandoMovimientoId)
+        .select();
+
+      if (error) {
+        console.error('Error al corregir el movimiento:', error);
+        alert('Error al guardar la corrección: ' + error.message);
+        return;
+      }
+      if (!data || data.length === 0) {
+        console.error('El update no devolvió filas — posible bloqueo de RLS.');
+        alert('No se pudo guardar: el servidor no confirmó el cambio. Revisá la consola.');
+        return;
+      }
+      setEditandoMovimientoId(null);
+      await cargarDatos();
+    } catch (e) {
+      console.error('Excepción al corregir el movimiento:', e);
+      alert('Ocurrió un error inesperado. Mirá la consola para más detalle.');
+    } finally {
+      setGuardandoEditarMovimiento(false);
+    }
+  }
+
+  const unidadNombre = (unidadId) => {
+    if (!unidadId) return null;
+    const u = unidades.find((x) => String(x.id) === String(unidadId));
+    return u ? u.identificador : `Unidad #${unidadId}`;
+  };
+
+  // Última reparación (del historial de compras) por código, para poder
+  // combinarla con el estado operativo manual (movimientos).
+  const ultimaReparacionPorCodigo = useMemo(() => {
+    const map = {};
+    reparaciones.forEach((r) => {
+      const actual = map[r.codigo];
+      if (!actual || (r.fecha_solicitud || '') > (actual.fecha_solicitud || '')) map[r.codigo] = r;
+    });
+    return map;
+  }, [reparaciones]);
+
+  // ============================================================================
+  // ESTADO EFECTIVO: combina las dos fuentes de estado que hoy conviven:
+  //  - cilindros.movimientos (carga manual: en_uso/en_stock/en_proveedor/roto/baja)
+  //  - cilindros.reparaciones (viene del reporte de compras histórico: si la
+  //    última reparación no tiene remito, el cilindro sigue "en poder del
+  //    proveedor" aunque nadie haya cargado nunca un movimiento a mano)
+  // Gana la fuente con la fecha más reciente. Si nunca se cargó un
+  // movimiento, se usa lo que diga la última reparación.
+  // ============================================================================
+  const estadoEfectivoPorCodigo = useMemo(() => {
+    const map = {};
+    catalogo.forEach((c) => {
+      const mov = estadoActualPorCodigo[c.codigo];
+      const rep = ultimaReparacionPorCodigo[c.codigo];
+
+      const fechaMov = mov?.fecha ? new Date(mov.fecha) : null;
+      const fechaRep = rep?.fecha_solicitud ? new Date(rep.fecha_solicitud) : null;
+
+      if (fechaMov && (!fechaRep || fechaMov >= fechaRep)) {
+        map[c.codigo] = { estado: mov.estado, fecha: mov.fecha, proveedor: mov.proveedor, origen: 'movimiento' };
+      } else if (rep && rep.estado_reparacion === 'En poder del proveedor (en reparación)') {
+        map[c.codigo] = { estado: 'en_proveedor', fecha: rep.fecha_solicitud, proveedor: rep.proveedor, origen: 'reparacion' };
+      } else if (rep && rep.estado_reparacion === 'Reparado - Recibido en Almacén') {
+        map[c.codigo] = { estado: 'en_stock', fecha: rep.remito_fecha || rep.fecha_solicitud, proveedor: null, origen: 'reparacion' };
+      } else if (mov) {
+        map[c.codigo] = { estado: mov.estado, fecha: mov.fecha, proveedor: mov.proveedor, origen: 'movimiento' };
+      }
+    });
+    return map;
+  }, [catalogo, estadoActualPorCodigo, ultimaReparacionPorCodigo]);
+
+  const DIAS_ALERTA_ESTADO = 30;
+
+  // Todos los códigos actualmente "en poder del proveedor" o "roto en almacén",
+  // sin importar hace cuánto — la vista completa que se puede abrir desde el
+  // dashboard con un botón.
+  const cilindrosEnProveedorORoto = useMemo(() => {
+    return Object.entries(estadoEfectivoPorCodigo)
+      .filter(([, e]) => e.estado === 'en_proveedor' || e.estado === 'roto_en_almacen')
+      .map(([codigo, e]) => {
+        const dias = diasDesde(e.fecha);
+        const c = catalogo.find((x) => x.codigo === codigo);
+        return {
+          codigo,
+          estado: e.estado,
+          dias,
+          fecha: e.fecha,
+          descripcion_unificada: c?.descripcion_unificada || c?.descripcion_original || '',
+          proveedor: e.proveedor,
+          origen: e.origen,
+        };
+      })
+      .sort((a, b) => (b.dias ?? -1) - (a.dias ?? -1));
+  }, [estadoEfectivoPorCodigo, catalogo]);
+
+  // Alertas = el subconjunto de la lista de arriba con 30+ días
+  const alertasOperativas = useMemo(
+    () => cilindrosEnProveedorORoto.filter((a) => a.dias !== null && a.dias >= DIAS_ALERTA_ESTADO),
+    [cilindrosEnProveedorORoto]
+  );
+
+  // Vista "todos en poder del proveedor" que se abre con el botón del dashboard
+  const [mostrarTodosEnProveedor, setMostrarTodosEnProveedor] = useState(false);
+
+  // Filtro final por estado operativo (usa estadoEfectivoPorCodigo, que se
+  // calcula más arriba combinando movimientos + reparaciones histórico).
+  const codesInGroupFiltrados = useMemo(() => {
+    if (filtroEstadoOperativo === 'todos') return codesInGroupFiltradosBase;
+    return codesInGroupFiltradosBase.filter(
+      (c) => estadoEfectivoPorCodigo[c.codigo]?.estado === filtroEstadoOperativo
+    );
+  }, [codesInGroupFiltradosBase, filtroEstadoOperativo, estadoEfectivoPorCodigo]);
+
   const totals = useMemo(() => {
     const codes = new Set(catalogo.map((c) => c.codigo));
-    const enProveedor = reparaciones.filter((r) => r.estado_reparacion === 'En poder del proveedor (en reparación)').length;
-    const enAlmacen = reparaciones.filter((r) => r.estado_reparacion === 'Reparado - Recibido en Almacén').length;
+    const estados = Object.values(estadoEfectivoPorCodigo);
+    const enProveedor = estados.filter((e) => e.estado === 'en_proveedor').length;
+    const enAlmacen = estados.filter((e) => e.estado === 'en_stock').length;
     return { codigos: codes.size, reparaciones: reparaciones.length, enProveedor, enAlmacen };
-  }, [catalogo, reparaciones]);
+  }, [catalogo, reparaciones, estadoEfectivoPorCodigo]);
+
+  function irACodigo(codigo) {
+    const grupo = groups.find((g) => g.codes.has(codigo));
+    if (grupo) setSelectedGroup(grupo.name);
+    setSelectedCode(codigo);
+    setMostrarHistorialMovimientos(false);
+    setBusquedaGlobal('');
+    setBusquedaGlobalAbierta(false);
+    setVistaPrincipal('cilindros');
+  }
+
+  const resultadosBusquedaGlobal = useMemo(() => {
+    if (!busquedaGlobal.trim()) return [];
+    const q = busquedaGlobal.trim().toUpperCase();
+    return catalogo
+      .filter(
+        (c) =>
+          c.codigo.toUpperCase().includes(q) ||
+          (c.descripcion_unificada || '').toUpperCase().includes(q) ||
+          (c.descripcion_original || '').toUpperCase().includes(q)
+      )
+      .slice(0, 8);
+  }, [busquedaGlobal, catalogo]);
 
   if (loading) {
     return (
@@ -488,6 +686,52 @@ export default function CilindrosApp() {
       </div>
     );
   }
+
+  const vm = {
+    query, setQuery,
+    ordenSidebar, setOrdenSidebar,
+    filteredGroups,
+    selectedGroup, setSelectedGroup,
+    selectedCode, setSelectedCode,
+    codeQuery, setCodeQuery,
+    fechaDesde, setFechaDesde,
+    fechaHasta, setFechaHasta,
+    ocultarInactivos, setOcultarInactivos,
+    groups,
+    activeGroup,
+    codesInGroup,
+    codesInGroupFiltrados,
+    cantidadInactivosEnGrupo,
+    chartMensual,
+    selectedCodeRows,
+    estadoActualPorCodigo,
+    historialMovimientos,
+    mostrarHistorialMovimientos, setMostrarHistorialMovimientos,
+    esAdmin, puedeDarBaja, puedeRegistrarMovimiento, puedeRegistrarReparacion,
+    catalogo,
+    editandoCatalogo, setEditandoCatalogo,
+    formCatalogo, setFormCatalogo,
+    guardandoCatalogo, guardarCatalogacion,
+    mostrarFormMovimiento, setMostrarFormMovimiento,
+    formMovimiento, setFormMovimiento,
+    guardandoMovimiento, registrarMovimiento,
+    unidades,
+    mostrarFormBaja, setMostrarFormBaja,
+    formBaja, setFormBaja,
+    guardandoBaja, darDeBaja,
+    cancelandoBaja, cancelarBaja,
+    unidadNombre,
+    mostrarFormReparacion, setMostrarFormReparacion,
+    formReparacion, setFormReparacion,
+    guardandoReparacion, registrarReparacion,
+    alertasOperativas,
+    irACodigo,
+    filtroEstadoOperativo, setFiltroEstadoOperativo,
+    editandoMovimientoId, abrirEditarMovimiento,
+    formEditarMovimiento, setFormEditarMovimiento,
+    guardandoEditarMovimiento, guardarEditarMovimiento,
+    setEditandoMovimientoId,
+  };
 
   return (
     <div style={styles.app}>
@@ -510,11 +754,44 @@ export default function CilindrosApp() {
             <div style={styles.subtitle}>Seguimiento de reparaciones — Base Cliba I.U.S.A.</div>
           </div>
         </div>
+
+        <div style={{ position: 'relative' }}>
+          <input
+            placeholder="🔍 Buscar código o descripción..."
+            value={busquedaGlobal}
+            onChange={(e) => { setBusquedaGlobal(e.target.value); setBusquedaGlobalAbierta(true); }}
+            onFocus={() => setBusquedaGlobalAbierta(true)}
+            onBlur={() => setTimeout(() => setBusquedaGlobalAbierta(false), 150)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && resultadosBusquedaGlobal[0]) irACodigo(resultadosBusquedaGlobal[0].codigo); }}
+            style={styles.globalSearchInput}
+          />
+          {busquedaGlobalAbierta && busquedaGlobal.trim() && (
+            <div style={styles.globalSearchDropdown}>
+              {resultadosBusquedaGlobal.length === 0 ? (
+                <div style={styles.globalSearchEmpty}>Sin resultados</div>
+              ) : (
+                resultadosBusquedaGlobal.map((c) => (
+                  <div key={c.codigo} style={styles.globalSearchItem} className="row-hover" onClick={() => irACodigo(c.codigo)}>
+                    <span style={styles.globalSearchCodigo}>{c.codigo}</span>
+                    <span style={styles.globalSearchDesc}>{c.descripcion_unificada || c.descripcion_original}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
         <div style={styles.headerStats}>
           <Stat label="Códigos activos" value={totals.codigos} />
           <Stat label="Reparaciones (OC)" value={totals.reparaciones} />
           <Stat label="En proveedor" value={totals.enProveedor} accent="#E8871E" />
           <Stat label="En almacén" value={totals.enAlmacen} accent="#4FA98C" />
+          <button
+            style={{ ...styles.adminBtnPrimary, ...(mostrarTodosEnProveedor ? styles.filterToggleActive : {}) }}
+            onClick={() => setMostrarTodosEnProveedor((v) => !v)}
+          >
+            📦 En poder del proveedor ({cilindrosEnProveedorORoto.length})
+          </button>
           <button style={styles.refreshBtn} onClick={cargarDatos} title="Actualizar datos">↻</button>
 
           <div style={{ position: 'relative' }}>
@@ -589,417 +866,73 @@ export default function CilindrosApp() {
         </div>
       )}
 
-      <div style={styles.body}>
-        <div style={styles.sidebar}>
-          <input
-            placeholder="Buscar tipo o código..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            style={styles.search}
-          />
-          <div style={styles.sortToggle}>
-            <span style={styles.sortToggleLabel}>Ordenar por</span>
-            <button
-              style={{ ...styles.sortToggleBtn, ...(ordenSidebar === 'cantidad' ? styles.sortToggleBtnActive : {}) }}
-              onClick={() => setOrdenSidebar('cantidad')}
-            >
-              Cantidad
-            </button>
-            <button
-              style={{ ...styles.sortToggleBtn, ...(ordenSidebar === 'reciente' ? styles.sortToggleBtnActive : {}) }}
-              onClick={() => setOrdenSidebar('reciente')}
-            >
-              Actividad reciente
-            </button>
-          </div>
-          <div style={styles.sidebarScroll}>
-            {filteredGroups.map((g) => (
-              <div
-                key={g.name}
-                onClick={() => { setSelectedGroup(g.name); setSelectedCode(null); setCodeQuery(''); setFechaDesde(''); setFechaHasta(''); }}
-                style={{
-                  ...styles.groupItem,
-                  ...(selectedGroup === g.name ? styles.groupItemActive : {}),
-                }}
-                className="row-hover"
-              >
-                <div style={styles.groupItemTop}>
-                  <span style={styles.groupCount}>{g.codeCount}</span>
-                </div>
-                <div style={styles.groupName}>{g.name}</div>
-                {ordenSidebar === 'reciente' && g.ultimaActividad && (
-                  <div style={styles.groupActividad}>{fmtHaceTiempo(g.ultimaActividad)}</div>
-                )}
+      {mostrarTodosEnProveedor && (
+        <div style={styles.modalOverlay} onClick={() => setMostrarTodosEnProveedor(false)}>
+          <div style={{ ...styles.modalCard, width: 640, maxHeight: '75vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.adminPanelTitle}>
+              En poder del proveedor o roto — {cilindrosEnProveedorORoto.length}
+            </div>
+            {cilindrosEnProveedorORoto.length === 0 ? (
+              <div style={styles.alertasVacio}>No hay ningún cilindro en poder del proveedor ni roto en este momento.</div>
+            ) : (
+              <div style={styles.alertasList}>
+                {cilindrosEnProveedorORoto.map((a) => (
+                  <div
+                    key={a.codigo}
+                    style={styles.alertaRow}
+                    className="row-hover"
+                    onClick={() => { irACodigo(a.codigo); setMostrarTodosEnProveedor(false); }}
+                  >
+                    <span style={{
+                      ...styles.statusBadge,
+                      ...(a.estado === 'roto_en_almacen'
+                        ? { color: '#C0392B', background: 'rgba(192,57,43,0.16)' }
+                        : { color: '#E8871E', background: 'rgba(232,135,30,0.16)' }),
+                      minWidth: 150, textAlign: 'center',
+                    }}>
+                      {a.estado === 'roto_en_almacen' ? 'Roto — en almacén' : 'En poder del proveedor'}
+                    </span>
+                    <span style={styles.alertaCodigo}>{a.codigo}</span>
+                    <span style={styles.alertaDesc}>{a.descripcion_unificada}</span>
+                    {a.proveedor && <span style={styles.alertaProveedor}>{a.proveedor}</span>}
+                    <span style={styles.alertaDias}>{a.dias !== null ? `hace ${a.dias} días` : ''}</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+            <div style={{ ...styles.adminFormActions, marginTop: 16 }}>
+              <button style={styles.adminBtn} onClick={() => setMostrarTodosEnProveedor(false)}>Cerrar</button>
+            </div>
           </div>
         </div>
+      )}
 
-        <div style={styles.main}>
-          {!activeGroup && (
-            <div style={styles.emptyState}>
-              <div style={styles.emptyIcon}>◧</div>
-              <div style={styles.emptyTitle}>Seleccioná un tipo de cilindro</div>
-              <div style={styles.emptyText}>{groups.length} tipos de cilindro catalogados</div>
-            </div>
-          )}
-
-          {activeGroup && !selectedCode && (
-            <div>
-              <div style={styles.mainHeader}>
-                <h2 style={styles.mainTitle}>{activeGroup.name}</h2>
-                <div style={styles.mainMeta}>{codesInGroup.length} códigos · {activeGroup.repairCount} reparaciones registradas</div>
-              </div>
-
-              <div style={styles.filterBar}>
-                <input
-                  placeholder="Buscar código..."
-                  value={codeQuery}
-                  onChange={(e) => setCodeQuery(e.target.value)}
-                  style={styles.filterInput}
-                />
-                <div style={styles.filterDateGroup}>
-                  <span style={styles.filterDateLabel}>Última reparación desde</span>
-                  <input
-                    type="date"
-                    value={fechaDesde}
-                    onChange={(e) => setFechaDesde(e.target.value)}
-                    style={styles.filterDateInput}
-                  />
-                </div>
-                <div style={styles.filterDateGroup}>
-                  <span style={styles.filterDateLabel}>hasta</span>
-                  <input
-                    type="date"
-                    value={fechaHasta}
-                    onChange={(e) => setFechaHasta(e.target.value)}
-                    style={styles.filterDateInput}
-                  />
-                </div>
-                {(codeQuery || fechaDesde || fechaHasta) && (
-                  <button
-                    style={styles.filterClearBtn}
-                    onClick={() => { setCodeQuery(''); setFechaDesde(''); setFechaHasta(''); }}
-                  >
-                    Limpiar filtros
-                  </button>
-                )}
-                {cantidadInactivosEnGrupo > 0 && (
-                  <button
-                    style={{ ...styles.filterClearBtn, ...(ocultarInactivos ? styles.filterToggleActive : {}) }}
-                    onClick={() => setOcultarInactivos((v) => !v)}
-                  >
-                    {ocultarInactivos ? 'Mostrar' : 'Ocultar'} sin actividad 4+ años ({cantidadInactivosEnGrupo})
-                  </button>
-                )}
-                <span style={styles.filterCount}>{codesInGroupFiltrados.length} de {codesInGroup.length}</span>
-              </div>
-
-              <div style={styles.chartCard}>
-                <div style={styles.chartTitle}>Reparaciones por mes — últimos 6 meses</div>
-                <div style={styles.chartWrap}>
-                  {chartMensual.map((c) => {
-                    const max = Math.max(...chartMensual.map((x) => x.cantidad), 1);
-                    return (
-                      <div key={c.mes} style={styles.chartCol}>
-                        <div style={styles.chartBarWrap}>
-                          <div
-                            style={{ ...styles.chartBar, height: `${(c.cantidad / max) * 100}%` }}
-                            title={`${c.cantidad} reparaciones`}
-                          />
-                        </div>
-                        <div style={styles.chartValue}>{c.cantidad}</div>
-                        <div style={styles.chartLabel}>{c.label}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {codesInGroupFiltrados.length === 0 && (
-                <div style={styles.filterEmpty}>No hay códigos que coincidan con estos filtros.</div>
-              )}
-
-              <div style={styles.codeGrid}>
-                {codesInGroupFiltrados.map(({ codigo, last, count }) => {
-                  const st = STATUS_STYLE[last.estado_reparacion] || { color: '#8B9199', bg: 'rgba(139,145,153,0.14)', label: last.estado_reparacion, dot: '#5A6068' };
-                  const inactivo = esInactivo(last.fecha_solicitud);
-                  const bajaManual = estadoActualPorCodigo[codigo]?.estado === 'baja';
-                  return (
-                    <div key={codigo} style={{ ...styles.codeCard, ...(inactivo || bajaManual ? styles.codeCardInactivo : {}) }} className="card-hover" onClick={() => { setSelectedCode(codigo); setMostrarHistorialMovimientos(false); }}>
-                      {bajaManual && <div style={{ ...styles.bajaTag, background: 'rgba(192,57,43,0.22)' }}>BAJA REGISTRADA</div>}
-                      {!bajaManual && inactivo && <div style={styles.bajaTag}>SIN ACTIVIDAD — 4+ años</div>}
-                      <div style={styles.codeCardTop}>
-                        <span style={styles.codeText}>{codigo}</span>
-                        <span style={{ ...styles.statusDot, background: st.dot }} />
-                      </div>
-                      <div style={styles.codeCardDesc}>{last.descripcion_corta}</div>
-                      <div style={styles.codeCardBottom}>
-                        <span style={{ ...styles.statusBadge, color: st.color, background: st.bg }}>{st.label}</span>
-                        <span style={styles.codeCardCount}>{count} rep.</span>
-                      </div>
-                      <div style={styles.codeCardDate}>
-                        Última OC: {fmtDate(last.fecha_solicitud)} {last.proveedor ? `· ${last.proveedor}` : ''}
-                        {last.fecha_solicitud && <span style={styles.codeCardHace}> · {fmtHaceTiempo(last.fecha_solicitud)}</span>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {selectedCode && (
-            <div>
-              <button style={styles.backBtn} onClick={() => setSelectedCode(null)}>← Volver a {activeGroup?.name}</button>
-              <div style={styles.mainHeader}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
-                  <div>
-                    <h2 style={{ ...styles.mainTitle, fontFamily: "'IBM Plex Mono', monospace" }}>{selectedCode}</h2>
-                    <div style={styles.mainMeta}>{selectedCodeRows[0]?.descripcion_original} · {selectedCodeRows.length} reparaciones</div>
-                    {estadoActualPorCodigo[selectedCode]?.estado === 'baja' ? (
-                      <div style={{ ...styles.bajaTag, marginTop: 8, display: 'inline-block', background: 'rgba(192,57,43,0.22)' }}>BAJA REGISTRADA</div>
-                    ) : esInactivo(selectedCodeRows.find((r) => r.fecha_solicitud)?.fecha_solicitud) ? (
-                      <div style={{ ...styles.bajaTag, marginTop: 8, display: 'inline-block' }}>SIN ACTIVIDAD — 4+ años</div>
-                    ) : null}
-                  </div>
-                  {(esAdmin || puedeDarBaja) && (
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      {esAdmin && (
-                        <button
-                          style={styles.adminBtn}
-                          onClick={() => {
-                            const c = catalogo.find((x) => x.codigo === selectedCode);
-                            setFormCatalogo({ descripcion_unificada: c?.descripcion_unificada || '', equipo: c?.equipo || '' });
-                            setEditandoCatalogo(true);
-                          }}
-                        >
-                          Editar catalogación
-                        </button>
-                      )}
-                      {esAdmin && (
-                        <button style={styles.adminBtnPrimary} onClick={() => setMostrarFormMovimiento(true)}>
-                          Registrar movimiento
-                        </button>
-                      )}
-                      {puedeDarBaja && estadoActualPorCodigo[selectedCode]?.estado === 'baja' ? (
-                        <button style={styles.adminBtnBaja} disabled={cancelandoBaja} onClick={() => cancelarBaja(selectedCode)}>
-                          {cancelandoBaja ? 'Cancelando...' : 'Cancelar baja'}
-                        </button>
-                      ) : puedeDarBaja ? (
-                        <button style={styles.adminBtnDanger} onClick={() => setMostrarFormBaja(true)}>
-                          Dar de baja
-                        </button>
-                      ) : null}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Estado operativo actual */}
-              {estadoActualPorCodigo[selectedCode] && (
-                <div style={styles.estadoActualCard}>
-                  {(() => {
-                    const m = estadoActualPorCodigo[selectedCode];
-                    const es = ESTADO_OPERATIVO_STYLE[m.estado] || { label: m.estado, color: '#8B9199', bg: 'rgba(139,145,153,0.14)' };
-                    return (
-                      <>
-                        <span style={{ ...styles.statusBadge, color: es.color, background: es.bg, fontSize: 12 }}>{es.label}</span>
-                        <span style={styles.estadoActualMeta}>
-                          desde {fmtDate(m.fecha)}{m.proveedor ? ` · ${m.proveedor}` : ''}{m.observaciones ? ` · ${m.observaciones}` : ''}
-                        </span>
-                      </>
-                    );
-                  })()}
-                  {historialMovimientos.length > 0 && (
-                    <button
-                      style={styles.verHistorialBtn}
-                      onClick={() => setMostrarHistorialMovimientos((v) => !v)}
-                    >
-                      {mostrarHistorialMovimientos ? 'Ocultar' : 'Ver'} historial de estado ({historialMovimientos.length})
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Historial completo de cambios de estado operativo (en uso / stock / proveedor / baja / cancelaciones) */}
-              {mostrarHistorialMovimientos && historialMovimientos.length > 0 && (
-                <div style={styles.adminPanel}>
-                  <div style={styles.adminPanelTitle}>Historial de estado operativo — {selectedCode}</div>
-                  <div style={styles.movTable}>
-                    {historialMovimientos.map((m) => {
-                      const es = ESTADO_OPERATIVO_STYLE[m.estado] || { label: m.estado, color: '#8B9199', bg: 'rgba(139,145,153,0.14)' };
-                      return (
-                        <div key={m.id} style={styles.movRow}>
-                          <span style={{ ...styles.statusBadge, color: es.color, background: es.bg, minWidth: 150, textAlign: 'center' }}>
-                            {es.label}
-                          </span>
-                          <span style={styles.movFecha}>{fmtDate(m.fecha)} <span style={{ color: '#5A6068' }}>({fmtHaceTiempo(m.fecha)})</span></span>
-                          <span style={styles.movObs}>{m.observaciones || (m.proveedor ? `Proveedor: ${m.proveedor}` : '—')}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Formulario: editar catalogación */}
-              {editandoCatalogo && (
-                <div style={styles.adminPanel}>
-                  <div style={styles.adminPanelTitle}>Editar catalogación de {selectedCode}</div>
-                  <div style={styles.adminFormRow}>
-                    <div style={{ flex: 1 }}>
-                      <div style={styles.fieldLabel}>Descripción unificada</div>
-                      <input
-                        style={styles.adminInput}
-                        value={formCatalogo.descripcion_unificada}
-                        onChange={(e) => setFormCatalogo((f) => ({ ...f, descripcion_unificada: e.target.value }))}
-                      />
-                    </div>
-                    <div style={{ width: 200 }}>
-                      <div style={styles.fieldLabel}>Equipo</div>
-                      <input
-                        style={styles.adminInput}
-                        value={formCatalogo.equipo}
-                        onChange={(e) => setFormCatalogo((f) => ({ ...f, equipo: e.target.value }))}
-                      />
-                    </div>
-                  </div>
-                  <div style={styles.adminFormActions}>
-                    <button style={styles.adminBtn} onClick={() => setEditandoCatalogo(false)}>Cancelar</button>
-                    <button
-                      style={styles.adminBtnPrimary}
-                      disabled={guardandoCatalogo}
-                      onClick={() => guardarCatalogacion(selectedCode)}
-                    >
-                      {guardandoCatalogo ? 'Guardando...' : 'Guardar'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Formulario: registrar movimiento */}
-              {mostrarFormMovimiento && (
-                <div style={styles.adminPanel}>
-                  <div style={styles.adminPanelTitle}>Registrar movimiento — {selectedCode}</div>
-                  <div style={styles.adminFormRow}>
-                    <div style={{ width: 220 }}>
-                      <div style={styles.fieldLabel}>Nuevo estado</div>
-                      <select
-                        style={styles.adminInput}
-                        value={formMovimiento.estado}
-                        onChange={(e) => setFormMovimiento((f) => ({ ...f, estado: e.target.value }))}
-                      >
-                        <option value="en_uso">En uso</option>
-                        <option value="en_stock">En stock (reparado)</option>
-                        <option value="en_proveedor">En poder del proveedor</option>
-                        <option value="roto_en_almacen">Roto — en almacén</option>
-                        <option value="baja">Dado de baja</option>
-                      </select>
-                    </div>
-                    {formMovimiento.estado === 'en_proveedor' && (
-                      <div style={{ flex: 1 }}>
-                        <div style={styles.fieldLabel}>Proveedor</div>
-                        <input
-                          style={styles.adminInput}
-                          value={formMovimiento.proveedor}
-                          onChange={(e) => setFormMovimiento((f) => ({ ...f, proveedor: e.target.value }))}
-                        />
-                      </div>
-                    )}
-                    <div style={{ flex: 1 }}>
-                      <div style={styles.fieldLabel}>Observaciones (opcional)</div>
-                      <input
-                        style={styles.adminInput}
-                        value={formMovimiento.observaciones}
-                        onChange={(e) => setFormMovimiento((f) => ({ ...f, observaciones: e.target.value }))}
-                      />
-                    </div>
-                  </div>
-                  <div style={styles.adminFormActions}>
-                    <button style={styles.adminBtn} onClick={() => setMostrarFormMovimiento(false)}>Cancelar</button>
-                    <button
-                      style={styles.adminBtnPrimary}
-                      disabled={guardandoMovimiento}
-                      onClick={() => registrarMovimiento(selectedCode)}
-                    >
-                      {guardandoMovimiento ? 'Guardando...' : 'Guardar movimiento'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Formulario: dar de baja */}
-              {mostrarFormBaja && (
-                <div style={{ ...styles.adminPanel, borderColor: '#C0392B' }}>
-                  <div style={{ ...styles.adminPanelTitle, color: '#E88A83' }}>Dar de baja — {selectedCode}</div>
-                  <div style={styles.adminFormRow}>
-                    <div style={{ width: 200 }}>
-                      <div style={styles.fieldLabel}>Fecha de la baja</div>
-                      <input
-                        type="date"
-                        style={styles.adminInput}
-                        value={formBaja.fecha}
-                        onChange={(e) => setFormBaja((f) => ({ ...f, fecha: e.target.value }))}
-                      />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={styles.fieldLabel}>Motivo *</div>
-                      <input
-                        style={styles.adminInput}
-                        placeholder="Ej: rotura irreparable, cuerpo fisurado, etc."
-                        value={formBaja.motivo}
-                        onChange={(e) => setFormBaja((f) => ({ ...f, motivo: e.target.value }))}
-                      />
-                    </div>
-                  </div>
-                  <div style={styles.adminFormActions}>
-                    <button style={styles.adminBtn} onClick={() => setMostrarFormBaja(false)}>Cancelar</button>
-                    <button
-                      style={styles.adminBtnDanger}
-                      disabled={guardandoBaja}
-                      onClick={() => darDeBaja(selectedCode)}
-                    >
-                      {guardandoBaja ? 'Guardando...' : 'Confirmar baja'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div style={styles.timeline}>
-                {selectedCodeRows.map((r, i) => {
-                  const st = STATUS_STYLE[r.estado_reparacion] || { color: '#8B9199', bg: 'rgba(139,145,153,0.14)', dot: '#5A6068' };
-                  return (
-                    <div key={i} style={styles.timelineItem}>
-                      <div style={styles.timelineDotWrap}>
-                        <span style={{ ...styles.timelineDot, background: st.dot }} />
-                        {i < selectedCodeRows.length - 1 && <span style={styles.timelineLine} />}
-                      </div>
-                      <div style={styles.timelineCard}>
-                        <div style={styles.timelineTop}>
-                          <span style={{ ...styles.statusBadge, color: st.color, background: st.bg }}>{r.estado_reparacion}</span>
-                          <span style={styles.timelineDate}>
-                            {fmtDate(r.fecha_solicitud)}
-                            {r.fecha_solicitud && <span style={{ color: '#5A6068' }}> · {fmtHaceTiempo(r.fecha_solicitud)}</span>}
-                          </span>
-                        </div>
-                        <div style={styles.timelineGrid}>
-                          <Field label="Proveedor" value={r.proveedor || '—'} />
-                          <Field label="OC definitiva" value={r.oc_definitiva || '—'} />
-                          <Field label="Precio total" value={fmtMoney(r.precio_total, r.moneda)} />
-                          <Field label="Remito" value={r.remito_nro ? `${r.remito_nro} (${r.remito_estado})` : '—'} />
-                          <Field label="Fecha remito" value={fmtDate(r.remito_fecha)} />
-                          <Field label="Factura" value={r.factura_numero ? `${r.factura_numero} (${r.factura_estado})` : '—'} />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
+      <div style={styles.tabBar}>
+        <button
+          style={{ ...styles.tabBtn, ...(vistaPrincipal === 'cilindros' ? styles.tabBtnActive : {}) }}
+          onClick={() => setVistaPrincipal('cilindros')}
+        >
+          Cilindros
+        </button>
+        <button
+          style={{ ...styles.tabBtn, ...(vistaPrincipal === 'unidades' ? styles.tabBtnActive : {}) }}
+          onClick={() => setVistaPrincipal('unidades')}
+        >
+          Unidades {unidades.length > 0 ? `(${unidades.length})` : ''}
+        </button>
       </div>
+
+      {vistaPrincipal === 'cilindros' && (
+        <VistaCilindros vm={vm} />
+      )}
+
+      {vistaPrincipal === 'unidades' && (
+        <UnidadesTab
+          unidades={unidades}
+          puedeGestionar={puedeGestionarUnidades}
+          onRefresh={cargarDatos}
+        />
+      )}
 
       <div style={styles.footer}>
         Dato de estado: inferido a partir de OC / Remito / Factura del reporte de compras (no refleja ubicación física en tiempo real).
@@ -1007,240 +940,3 @@ export default function CilindrosApp() {
     </div>
   );
 }
-
-function Stat({ label, value, accent }) {
-  return (
-    <div style={styles.statBox}>
-      <div style={{ ...styles.statValue, color: accent || '#E8E6E1' }}>{value}</div>
-      <div style={styles.statLabel}>{label}</div>
-    </div>
-  );
-}
-
-function Field({ label, value }) {
-  return (
-    <div>
-      <div style={styles.fieldLabel}>{label}</div>
-      <div style={styles.fieldValue}>{value}</div>
-    </div>
-  );
-}
-
-const styles = {
-  app: {
-    fontFamily: "'Oswald', sans-serif",
-    background: '#1C1F22',
-    color: '#E8E6E1',
-    minHeight: '100vh',
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  centerScreen: {
-    minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-    background: '#1C1F22', gap: 16,
-  },
-  loadingText: { color: '#8B9199', fontFamily: "'Oswald', sans-serif", fontSize: 14 },
-  retryBtn: {
-    padding: '8px 18px', background: '#24282C', border: '1px solid #3A4048', borderRadius: 6,
-    color: '#E8E6E1', cursor: 'pointer', fontFamily: "'Oswald', sans-serif", fontSize: 13,
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '18px 28px',
-    borderBottom: '1px solid #2E3338',
-    background: '#1A1D20',
-    flexWrap: 'wrap',
-    gap: 16,
-  },
-  headerLeft: { display: 'flex', alignItems: 'center', gap: 14 },
-  plateIcon: {
-    width: 40, height: 40, borderRadius: 6, background: '#24282C', border: '1px solid #3A4048',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, color: '#5B7A99',
-  },
-  title: { fontSize: 17, fontWeight: 600, letterSpacing: '0.06em' },
-  subtitle: { fontSize: 12, color: '#8B9199', marginTop: 2, letterSpacing: '0.02em' },
-  headerStats: { display: 'flex', gap: 22, alignItems: 'center' },
-  statBox: { textAlign: 'right' },
-  statValue: { fontSize: 22, fontWeight: 600, fontFamily: "'IBM Plex Mono', monospace" },
-  statLabel: { fontSize: 10, color: '#8B9199', textTransform: 'uppercase', letterSpacing: '0.05em' },
-  refreshBtn: {
-    background: '#24282C', border: '1px solid #3A4048', color: '#8B9199', borderRadius: 6,
-    width: 32, height: 32, cursor: 'pointer', fontSize: 15,
-  },
-  body: { display: 'flex', flex: 1, minHeight: 0 },
-  sidebar: {
-    width: 320, borderRight: '1px solid #2E3338', display: 'flex', flexDirection: 'column',
-    background: '#1A1D20', flexShrink: 0,
-  },
-  search: {
-    margin: 14, padding: '9px 12px', background: '#24282C', border: '1px solid #3A4048',
-    borderRadius: 6, color: '#E8E6E1', fontSize: 13, outline: 'none', fontFamily: "'Oswald', sans-serif",
-  },
-  sidebarScroll: { overflowY: 'auto', flex: 1, padding: '0 8px 14px' },
-  groupItem: { padding: '10px 12px', borderRadius: 6, cursor: 'pointer', marginBottom: 3 },
-  groupItemActive: { background: '#262B30', boxShadow: 'inset 2px 0 0 #5B7A99' },
-  groupItemTop: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 4 },
-  groupCount: { fontSize: 12, color: '#8B9199', fontFamily: "'IBM Plex Mono', monospace" },
-  groupName: { fontSize: 13, lineHeight: 1.3, color: '#D8D6D1' },
-  main: { flex: 1, overflowY: 'auto', padding: '24px 32px' },
-  emptyState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '70%', color: '#5A6068' },
-  emptyIcon: { fontSize: 40, marginBottom: 10 },
-  emptyTitle: { fontSize: 16, fontWeight: 500, marginBottom: 6, color: '#8B9199' },
-  emptyText: { fontSize: 12, textAlign: 'center', maxWidth: 340 },
-  mainHeader: { marginBottom: 22 },
-  mainTitle: { fontSize: 22, fontWeight: 600, margin: '8px 0 4px', letterSpacing: '0.01em' },
-  mainMeta: { fontSize: 12, color: '#8B9199' },
-  codeGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 },
-  codeCard: {
-    background: '#24282C', border: '1px solid #2E3338', borderRadius: 8, padding: 14, cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  codeCardTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  codeText: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 500, color: '#E8E6E1' },
-  statusDot: { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 },
-  codeCardDesc: { fontSize: 11.5, color: '#9AA0A6', marginBottom: 10, minHeight: 28, lineHeight: 1.35 },
-  codeCardBottom: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  statusBadge: { fontSize: 10, fontWeight: 500, padding: '3px 8px', borderRadius: 4, letterSpacing: '0.02em' },
-  codeCardCount: { fontSize: 11, color: '#5A6068', fontFamily: "'IBM Plex Mono', monospace" },
-  codeCardDate: { fontSize: 10.5, color: '#5A6068' },
-  backBtn: {
-    background: 'none', border: 'none', color: '#5B7A99', fontSize: 12, cursor: 'pointer', padding: 0, marginBottom: 14,
-    letterSpacing: '0.02em',
-  },
-  timeline: { display: 'flex', flexDirection: 'column' },
-  timelineItem: { display: 'flex', gap: 14 },
-  timelineDotWrap: { display: 'flex', flexDirection: 'column', alignItems: 'center', width: 12 },
-  timelineDot: { width: 12, height: 12, borderRadius: '50%', flexShrink: 0, marginTop: 4 },
-  timelineLine: { width: 2, flex: 1, background: '#2E3338', minHeight: 30 },
-  timelineCard: { background: '#24282C', border: '1px solid #2E3338', borderRadius: 8, padding: 14, marginBottom: 16, flex: 1 },
-  timelineTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  timelineDate: { fontSize: 12, color: '#8B9199', fontFamily: "'IBM Plex Mono', monospace" },
-  timelineGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10 },
-  fieldLabel: { fontSize: 9.5, color: '#5A6068', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 },
-  fieldValue: { fontSize: 12.5, color: '#D8D6D1' },
-  footer: {
-    padding: '10px 28px', borderTop: '1px solid #2E3338', fontSize: 10.5, color: '#5A6068', background: '#1A1D20',
-  },
-  adminBtn: {
-    background: '#24282C', border: '1px solid #3A4048', color: '#D8D6D1', borderRadius: 6,
-    padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
-  },
-  adminBtnPrimary: {
-    background: '#5B7A99', border: '1px solid #5B7A99', color: '#fff', borderRadius: 6,
-    padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: "'Oswald', sans-serif", fontWeight: 500,
-  },
-  adminBtnDanger: {
-    background: '#C0392B', border: '1px solid #C0392B', color: '#fff', borderRadius: 6,
-    padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: "'Oswald', sans-serif", fontWeight: 500,
-  },
-  adminBtnBaja: {
-    background: '#24282C', border: '1px solid #4FA98C', color: '#4FA98C', borderRadius: 6,
-    padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: "'Oswald', sans-serif", fontWeight: 500,
-  },
-  estadoActualCard: {
-    display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18,
-    padding: '10px 14px', background: '#24282C', border: '1px solid #2E3338', borderRadius: 8,
-  },
-  estadoActualMeta: { fontSize: 11.5, color: '#8B9199' },
-  adminPanel: {
-    background: '#24282C', border: '1px solid #3A4048', borderRadius: 8, padding: 16, marginBottom: 18,
-  },
-  adminPanelTitle: { fontSize: 13, fontWeight: 600, marginBottom: 12, color: '#E8E6E1' },
-  adminFormRow: { display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' },
-  adminInput: {
-    width: '100%', padding: '8px 10px', background: '#1C1F22', border: '1px solid #3A4048', borderRadius: 6,
-    color: '#E8E6E1', fontSize: 13, fontFamily: "'Oswald', sans-serif", marginTop: 4,
-  },
-  adminFormActions: { display: 'flex', justifyContent: 'flex-end', gap: 8 },
-
-  userChip: {
-    display: 'flex', alignItems: 'center', gap: 8, background: '#24282C', border: '1px solid #3A4048',
-    borderRadius: 20, padding: '5px 10px 5px 5px', cursor: 'pointer',
-  },
-  userAvatar: {
-    width: 26, height: 26, borderRadius: '50%', background: '#5B7A99', color: '#fff',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, flexShrink: 0,
-  },
-  userChipText: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.2 },
-  userChipName: { fontSize: 11.5, color: '#E8E6E1', fontWeight: 500 },
-  userChipRol: { fontSize: 9.5, color: '#8B9199', textTransform: 'uppercase', letterSpacing: '0.03em' },
-  userMenu: {
-    position: 'absolute', top: 'calc(100% + 6px)', right: 0, background: '#24282C', border: '1px solid #3A4048',
-    borderRadius: 8, overflow: 'hidden', minWidth: 170, zIndex: 20, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-  },
-  userMenuItem: {
-    display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'none', border: 'none',
-    color: '#D8D6D1', fontSize: 12.5, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
-  },
-  modalOverlay: {
-    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center',
-    justifyContent: 'center', zIndex: 100,
-  },
-  modalCard: {
-    background: '#24282C', border: '1px solid #3A4048', borderRadius: 10, padding: 22, width: 320,
-  },
-  passMsg: { fontSize: 12, marginBottom: 12 },
-
-  filterBar: {
-    display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap',
-    background: '#1A1D20', border: '1px solid #2E3338', borderRadius: 8, padding: '10px 14px',
-  },
-  filterInput: {
-    padding: '7px 10px', background: '#24282C', border: '1px solid #3A4048', borderRadius: 6,
-    color: '#E8E6E1', fontSize: 12.5, fontFamily: "'Oswald', sans-serif", width: 180, outline: 'none',
-  },
-  filterDateGroup: { display: 'flex', alignItems: 'center', gap: 6 },
-  filterDateLabel: { fontSize: 11, color: '#8B9199', whiteSpace: 'nowrap' },
-  filterDateInput: {
-    padding: '6px 8px', background: '#24282C', border: '1px solid #3A4048', borderRadius: 6,
-    color: '#E8E6E1', fontSize: 12, fontFamily: "'Oswald', sans-serif",
-  },
-  filterClearBtn: {
-    background: 'none', border: '1px solid #3A4048', color: '#8B9199', borderRadius: 6,
-    padding: '6px 12px', fontSize: 11.5, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
-  },
-  filterCount: { fontSize: 11.5, color: '#5A6068', marginLeft: 'auto', fontFamily: "'IBM Plex Mono', monospace" },
-  filterEmpty: { padding: '30px 0', textAlign: 'center', color: '#5A6068', fontSize: 13 },
-
-  sortToggle: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 14px 12px', flexWrap: 'wrap' },
-  sortToggleLabel: { fontSize: 10, color: '#5A6068', textTransform: 'uppercase', letterSpacing: '0.04em', width: '100%', marginBottom: 2 },
-  sortToggleBtn: {
-    background: '#24282C', border: '1px solid #3A4048', color: '#8B9199', borderRadius: 5,
-    padding: '4px 10px', fontSize: 11, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
-  },
-  sortToggleBtnActive: { background: '#262B30', color: '#5B7A99', borderColor: '#5B7A99' },
-  groupActividad: { fontSize: 10, color: '#5A6068', marginTop: 2, fontStyle: 'italic' },
-  codeCardHace: { color: '#5A6068', fontStyle: 'italic' },
-
-  chartCard: {
-    background: '#24282C', border: '1px solid #2E3338', borderRadius: 8, padding: '16px 20px', marginBottom: 18,
-  },
-  chartTitle: { fontSize: 12, fontWeight: 600, color: '#8B9199', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.03em' },
-  chartWrap: { display: 'flex', alignItems: 'flex-end', gap: 14, height: 110, padding: '0 4px' },
-  chartCol: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' },
-  chartBarWrap: { display: 'flex', alignItems: 'flex-end', height: 70, width: '100%', justifyContent: 'center' },
-  chartBar: { width: 26, borderRadius: '4px 4px 0 0', background: '#5B7A99', minHeight: 2, transition: 'height 0.3s' },
-  chartValue: { fontSize: 12, fontWeight: 600, color: '#E8E6E1', marginTop: 6, fontFamily: "'IBM Plex Mono', monospace" },
-  chartLabel: { fontSize: 10, color: '#5A6068', marginTop: 2, textTransform: 'capitalize' },
-
-  filterToggleActive: { background: 'rgba(192,57,43,0.14)', color: '#C0392B', borderColor: '#C0392B' },
-  codeCardInactivo: { opacity: 0.65, borderStyle: 'dashed' },
-  bajaTag: {
-    fontSize: 9.5, fontWeight: 600, color: '#C0392B', background: 'rgba(192,57,43,0.14)',
-    padding: '3px 7px', borderRadius: 4, marginBottom: 8, letterSpacing: '0.02em', textTransform: 'uppercase',
-  },
-
-  verHistorialBtn: {
-    marginLeft: 'auto', background: 'none', border: '1px solid #3A4048', color: '#8B9199',
-    borderRadius: 6, padding: '5px 12px', fontSize: 11, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
-  },
-  movTable: { display: 'flex', flexDirection: 'column', gap: 8 },
-  movRow: {
-    display: 'flex', alignItems: 'center', gap: 14, padding: '9px 12px', background: '#1C1F22',
-    borderRadius: 6, border: '1px solid #2E3338', flexWrap: 'wrap',
-  },
-  movFecha: { fontSize: 12, color: '#D8D6D1', fontFamily: "'IBM Plex Mono', monospace", minWidth: 160 },
-  movObs: { fontSize: 12, color: '#8B9199', flex: 1 },
-};

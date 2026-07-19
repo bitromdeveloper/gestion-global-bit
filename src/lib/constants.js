@@ -24,6 +24,12 @@ export const PERMISOS = {
     verDashboard: true, verMovimientos: false, verCostos: false,
     verHistorial: false, gestionarTubos: false, hacerMovimientos: true,
   },
+  // El superadmin (bitrom) puede "espiar" el módulo de gases desde su panel
+  // sin ser un usuario de gases propiamente dicho — necesita ver todo.
+  superadmin: {
+    verDashboard: true, verMovimientos: true, verCostos: true,
+    verHistorial: true, gestionarTubos: true, hacerMovimientos: true, editarPrecios: true,
+  },
 };
 
 // Qué movimientos puede hacer cada sector
@@ -32,4 +38,5 @@ export const MOVIMIENTOS_PERMITIDOS = {
   mantenimiento:  ['Consumo', 'Devolución'],
   infraestructura:['Consumo', 'Devolución'],
   admin:          ['Carga', 'Alta', 'Baja', 'Consumo', 'Devolución'],
+  superadmin:     ['Carga', 'Alta', 'Baja', 'Consumo', 'Devolución'],
 };

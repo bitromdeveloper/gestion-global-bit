@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../components/AuthContext';
 
-const SECTOR_LABEL = { admin:'Administrador', almacen:'Almacén', compras:'Compras', mantenimiento:'Mantenimiento', infraestructura:'Infraestructura' };
+const SECTOR_LABEL = { admin:'Administrador', almacen:'Almacén', compras:'Compras', mantenimiento:'Mantenimiento', infraestructura:'Infraestructura', superadmin:'Superadmin' };
 
 export default function Perfil() {
   const { user, changePassword, updateEmails } = useAuth();
@@ -77,10 +77,10 @@ export default function Perfil() {
         <div style={s.permsList}>
           {[
             { label:'Ver estado de tubos',              ok: true },
-            { label:'Registrar movimientos',            ok: ['admin','almacen'].includes(user?.sector) },
-            { label:'Gestionar tubos (agregar/editar)', ok: ['admin','almacen'].includes(user?.sector) },
-            { label:'Ver historial de movimientos',     ok: ['admin','almacen','compras'].includes(user?.sector) },
-            { label:'Ver costos y ciclos mensuales',    ok: ['admin','compras'].includes(user?.sector) },
+            { label:'Registrar movimientos',            ok: ['admin','almacen','superadmin'].includes(user?.sector) },
+            { label:'Gestionar tubos (agregar/editar)', ok: ['admin','almacen','superadmin'].includes(user?.sector) },
+            { label:'Ver historial de movimientos',     ok: ['admin','almacen','compras','superadmin'].includes(user?.sector) },
+            { label:'Ver costos y ciclos mensuales',    ok: ['admin','compras','superadmin'].includes(user?.sector) },
           ].map(p => (
             <div key={p.label} style={s.permItem}>
               <span style={{ color: p.ok ? '#10b981' : '#94a3b8', fontSize:15 }}>{p.ok ? '✓' : '✗'}</span>

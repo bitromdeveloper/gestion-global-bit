@@ -1,0 +1,276 @@
+export default {
+  app: {
+    fontFamily: "'Oswald', sans-serif",
+    background: '#1C1F22',
+    color: '#E8E6E1',
+    minHeight: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  centerScreen: {
+    minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+    background: '#1C1F22', gap: 16,
+  },
+  loadingText: { color: '#8B9199', fontFamily: "'Oswald', sans-serif", fontSize: 14 },
+  retryBtn: {
+    padding: '8px 18px', background: '#24282C', border: '1px solid #3A4048', borderRadius: 6,
+    color: '#E8E6E1', cursor: 'pointer', fontFamily: "'Oswald', sans-serif", fontSize: 13,
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '18px 28px',
+    borderBottom: '1px solid #2E3338',
+    background: '#1A1D20',
+    flexWrap: 'wrap',
+    gap: 16,
+  },
+  headerLeft: { display: 'flex', alignItems: 'center', gap: 14 },
+  plateIcon: {
+    width: 40, height: 40, borderRadius: 6, background: '#24282C', border: '1px solid #3A4048',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, color: '#5B7A99',
+  },
+  title: { fontSize: 17, fontWeight: 600, letterSpacing: '0.06em' },
+  subtitle: { fontSize: 12, color: '#8B9199', marginTop: 2, letterSpacing: '0.02em' },
+  headerStats: { display: 'flex', gap: 22, alignItems: 'center' },
+
+  globalSearchInput: {
+    width: 280, padding: '9px 14px', background: '#24282C', border: '1px solid #3A4048', borderRadius: 20,
+    color: '#E8E6E1', fontSize: 13, fontFamily: "'Oswald', sans-serif", outline: 'none',
+  },
+  globalSearchDropdown: {
+    position: 'absolute', top: 'calc(100% + 6px)', left: 0, width: 380, background: '#24282C',
+    border: '1px solid #3A4048', borderRadius: 8, overflow: 'hidden', zIndex: 30,
+    boxShadow: '0 8px 24px rgba(0,0,0,0.4)', maxHeight: 320, overflowY: 'auto',
+  },
+  globalSearchEmpty: { padding: '12px 14px', fontSize: 12, color: '#5A6068' },
+  globalSearchItem: {
+    display: 'flex', flexDirection: 'column', gap: 2, padding: '9px 14px', cursor: 'pointer',
+    borderBottom: '1px solid #2E3338',
+  },
+  globalSearchCodigo: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, color: '#E8E6E1', fontWeight: 500 },
+  globalSearchDesc: { fontSize: 11.5, color: '#8B9199' },
+  statBox: { textAlign: 'right' },
+  statValue: { fontSize: 22, fontWeight: 600, fontFamily: "'IBM Plex Mono', monospace" },
+  statLabel: { fontSize: 10, color: '#8B9199', textTransform: 'uppercase', letterSpacing: '0.05em' },
+  refreshBtn: {
+    background: '#24282C', border: '1px solid #3A4048', color: '#8B9199', borderRadius: 6,
+    width: 32, height: 32, cursor: 'pointer', fontSize: 15,
+  },
+  body: { display: 'flex', flex: 1, minHeight: 0 },
+  sidebar: {
+    width: 320, borderRight: '1px solid #2E3338', display: 'flex', flexDirection: 'column',
+    background: '#1A1D20', flexShrink: 0,
+  },
+  search: {
+    margin: 14, padding: '9px 12px', background: '#24282C', border: '1px solid #3A4048',
+    borderRadius: 6, color: '#E8E6E1', fontSize: 13, outline: 'none', fontFamily: "'Oswald', sans-serif",
+  },
+  sidebarScroll: { overflowY: 'auto', flex: 1, padding: '0 8px 14px' },
+  groupItem: { padding: '10px 12px', borderRadius: 6, cursor: 'pointer', marginBottom: 3 },
+  groupItemActive: { background: '#262B30', boxShadow: 'inset 2px 0 0 #5B7A99' },
+  groupItemTop: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 4 },
+  groupCount: { fontSize: 12, color: '#8B9199', fontFamily: "'IBM Plex Mono', monospace" },
+  groupName: { fontSize: 13, lineHeight: 1.3, color: '#D8D6D1' },
+  main: { flex: 1, overflowY: 'auto', padding: '24px 32px' },
+  emptyState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '70%', color: '#5A6068' },
+  emptyIcon: { fontSize: 40, marginBottom: 10 },
+  emptyTitle: { fontSize: 16, fontWeight: 500, marginBottom: 6, color: '#8B9199' },
+  emptyText: { fontSize: 12, textAlign: 'center', maxWidth: 340 },
+
+  dashboard: { display: 'flex', flexDirection: 'column', gap: 22 },
+  dashboardHeader: { display: 'flex', alignItems: 'center', gap: 16 },
+  alertasSection: {
+    background: '#24282C', border: '1px solid #2E3338', borderRadius: 10, padding: '18px 20px',
+  },
+  alertasTitle: { fontSize: 13, fontWeight: 600, color: '#E8871E', marginBottom: 14 },
+  alertasVacio: { fontSize: 12.5, color: '#4FA98C', padding: '8px 0' },
+  alertasList: { display: 'flex', flexDirection: 'column', gap: 8 },
+  alertaRow: {
+    display: 'flex', alignItems: 'center', gap: 14, padding: '10px 14px', background: '#1C1F22',
+    borderRadius: 6, border: '1px solid #2E3338', cursor: 'pointer', flexWrap: 'wrap',
+  },
+  alertaCodigo: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, color: '#E8E6E1', fontWeight: 500 },
+  alertaDesc: { fontSize: 12, color: '#8B9199', flex: 1 },
+  alertaProveedor: { fontSize: 11.5, color: '#5B7A99' },
+  alertaDias: { fontSize: 11.5, color: '#E8871E', fontWeight: 600, fontFamily: "'IBM Plex Mono', monospace" },
+  mainHeader: { marginBottom: 22 },
+  mainTitle: { fontSize: 22, fontWeight: 600, margin: '8px 0 4px', letterSpacing: '0.01em' },
+  mainMeta: { fontSize: 12, color: '#8B9199' },
+  codeGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 },
+  codeCard: {
+    background: '#24282C', border: '1px solid #2E3338', borderRadius: 8, padding: 14, cursor: 'pointer',
+    transition: 'all 0.15s ease',
+  },
+  codeCardTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  codeText: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 500, color: '#E8E6E1' },
+  statusDot: { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 },
+  codeCardDesc: { fontSize: 11.5, color: '#9AA0A6', marginBottom: 10, minHeight: 28, lineHeight: 1.35 },
+  codeCardBottom: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  statusBadge: { fontSize: 10, fontWeight: 500, padding: '3px 8px', borderRadius: 4, letterSpacing: '0.02em' },
+  codeCardCount: { fontSize: 11, color: '#5A6068', fontFamily: "'IBM Plex Mono', monospace" },
+  codeCardDate: { fontSize: 10.5, color: '#5A6068' },
+  backBtn: {
+    background: 'none', border: 'none', color: '#5B7A99', fontSize: 12, cursor: 'pointer', padding: 0, marginBottom: 14,
+    letterSpacing: '0.02em',
+  },
+  timeline: { display: 'flex', flexDirection: 'column' },
+  timelineItem: { display: 'flex', gap: 14 },
+  timelineDotWrap: { display: 'flex', flexDirection: 'column', alignItems: 'center', width: 12 },
+  timelineDot: { width: 12, height: 12, borderRadius: '50%', flexShrink: 0, marginTop: 4 },
+  timelineLine: { width: 2, flex: 1, background: '#2E3338', minHeight: 30 },
+  timelineCard: { background: '#24282C', border: '1px solid #2E3338', borderRadius: 8, padding: 14, marginBottom: 16, flex: 1 },
+  timelineTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  timelineDate: { fontSize: 12, color: '#8B9199', fontFamily: "'IBM Plex Mono', monospace" },
+  timelineGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10 },
+  fieldLabel: { fontSize: 9.5, color: '#5A6068', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 },
+  fieldValue: { fontSize: 12.5, color: '#D8D6D1' },
+  footer: {
+    padding: '10px 28px', borderTop: '1px solid #2E3338', fontSize: 10.5, color: '#5A6068', background: '#1A1D20',
+  },
+  adminBtn: {
+    background: '#24282C', border: '1px solid #3A4048', color: '#D8D6D1', borderRadius: 6,
+    padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
+  },
+  adminBtnPrimary: {
+    background: '#5B7A99', border: '1px solid #5B7A99', color: '#fff', borderRadius: 6,
+    padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: "'Oswald', sans-serif", fontWeight: 500,
+  },
+  adminBtnDanger: {
+    background: '#C0392B', border: '1px solid #C0392B', color: '#fff', borderRadius: 6,
+    padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: "'Oswald', sans-serif", fontWeight: 500,
+  },
+  adminBtnBaja: {
+    background: '#24282C', border: '1px solid #4FA98C', color: '#4FA98C', borderRadius: 6,
+    padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: "'Oswald', sans-serif", fontWeight: 500,
+  },
+  estadoActualCard: {
+    display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18,
+    padding: '10px 14px', background: '#24282C', border: '1px solid #2E3338', borderRadius: 8,
+  },
+  estadoActualMeta: { fontSize: 11.5, color: '#8B9199' },
+  adminPanel: {
+    background: '#24282C', border: '1px solid #3A4048', borderRadius: 8, padding: 16, marginBottom: 18,
+  },
+  adminPanelTitle: { fontSize: 13, fontWeight: 600, marginBottom: 12, color: '#E8E6E1' },
+  adminFormRow: { display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' },
+  adminInput: {
+    width: '100%', padding: '8px 10px', background: '#1C1F22', border: '1px solid #3A4048', borderRadius: 6,
+    color: '#E8E6E1', fontSize: 13, fontFamily: "'Oswald', sans-serif", marginTop: 4,
+  },
+  adminFormActions: { display: 'flex', justifyContent: 'flex-end', gap: 8 },
+
+  userChip: {
+    display: 'flex', alignItems: 'center', gap: 8, background: '#24282C', border: '1px solid #3A4048',
+    borderRadius: 20, padding: '5px 10px 5px 5px', cursor: 'pointer',
+  },
+  userAvatar: {
+    width: 26, height: 26, borderRadius: '50%', background: '#5B7A99', color: '#fff',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, flexShrink: 0,
+  },
+  userChipText: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.2 },
+  userChipName: { fontSize: 11.5, color: '#E8E6E1', fontWeight: 500 },
+  userChipRol: { fontSize: 9.5, color: '#8B9199', textTransform: 'uppercase', letterSpacing: '0.03em' },
+  userMenu: {
+    position: 'absolute', top: 'calc(100% + 6px)', right: 0, background: '#24282C', border: '1px solid #3A4048',
+    borderRadius: 8, overflow: 'hidden', minWidth: 170, zIndex: 20, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+  },
+  userMenuItem: {
+    display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'none', border: 'none',
+    color: '#D8D6D1', fontSize: 12.5, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
+  },
+  modalOverlay: {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', zIndex: 100,
+  },
+  modalCard: {
+    background: '#24282C', border: '1px solid #3A4048', borderRadius: 10, padding: 22, width: 320,
+  },
+  passMsg: { fontSize: 12, marginBottom: 12 },
+
+  filterBar: {
+    display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap',
+    background: '#1A1D20', border: '1px solid #2E3338', borderRadius: 8, padding: '10px 14px',
+  },
+  filterInput: {
+    padding: '7px 10px', background: '#24282C', border: '1px solid #3A4048', borderRadius: 6,
+    color: '#E8E6E1', fontSize: 12.5, fontFamily: "'Oswald', sans-serif", width: 180, outline: 'none',
+  },
+  filterDateGroup: { display: 'flex', alignItems: 'center', gap: 6 },
+  filterDateLabel: { fontSize: 11, color: '#8B9199', whiteSpace: 'nowrap' },
+  filterDateInput: {
+    padding: '6px 8px', background: '#24282C', border: '1px solid #3A4048', borderRadius: 6,
+    color: '#E8E6E1', fontSize: 12, fontFamily: "'Oswald', sans-serif",
+  },
+  filterClearBtn: {
+    background: 'none', border: '1px solid #3A4048', color: '#8B9199', borderRadius: 6,
+    padding: '6px 12px', fontSize: 11.5, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
+  },
+  filterCount: { fontSize: 11.5, color: '#5A6068', marginLeft: 'auto', fontFamily: "'IBM Plex Mono', monospace" },
+  filterEmpty: { padding: '30px 0', textAlign: 'center', color: '#5A6068', fontSize: 13 },
+
+  sortToggle: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 14px 12px', flexWrap: 'wrap' },
+  sortToggleLabel: { fontSize: 10, color: '#5A6068', textTransform: 'uppercase', letterSpacing: '0.04em', width: '100%', marginBottom: 2 },
+  sortToggleBtn: {
+    background: '#24282C', border: '1px solid #3A4048', color: '#8B9199', borderRadius: 5,
+    padding: '4px 10px', fontSize: 11, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
+  },
+  sortToggleBtnActive: { background: '#262B30', color: '#5B7A99', borderColor: '#5B7A99' },
+  groupActividad: { fontSize: 10, color: '#5A6068', marginTop: 2, fontStyle: 'italic' },
+  codeCardHace: { color: '#5A6068', fontStyle: 'italic' },
+
+  chartCard: {
+    background: '#24282C', border: '1px solid #2E3338', borderRadius: 8, padding: '16px 20px', marginBottom: 18,
+  },
+  chartTitle: { fontSize: 12, fontWeight: 600, color: '#8B9199', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.03em' },
+  chartWrap: { display: 'flex', alignItems: 'flex-end', gap: 14, height: 110, padding: '0 4px' },
+  chartCol: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' },
+  chartBarWrap: { display: 'flex', alignItems: 'flex-end', height: 70, width: '100%', justifyContent: 'center' },
+  chartBar: { width: 26, borderRadius: '4px 4px 0 0', background: '#5B7A99', minHeight: 2, transition: 'height 0.3s' },
+  chartValue: { fontSize: 12, fontWeight: 600, color: '#E8E6E1', marginTop: 6, fontFamily: "'IBM Plex Mono', monospace" },
+  chartLabel: { fontSize: 10, color: '#5A6068', marginTop: 2, textTransform: 'capitalize' },
+
+  filterToggleActive: { background: 'rgba(192,57,43,0.14)', color: '#C0392B', borderColor: '#C0392B' },
+  codeCardInactivo: { opacity: 0.65, borderStyle: 'dashed' },
+  bajaTag: {
+    fontSize: 9.5, fontWeight: 600, color: '#C0392B', background: 'rgba(192,57,43,0.14)',
+    padding: '3px 7px', borderRadius: 4, marginBottom: 8, letterSpacing: '0.02em', textTransform: 'uppercase',
+  },
+
+  verHistorialBtn: {
+    marginLeft: 'auto', background: 'none', border: '1px solid #3A4048', color: '#8B9199',
+    borderRadius: 6, padding: '5px 12px', fontSize: 11, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
+  },
+  movTable: { display: 'flex', flexDirection: 'column', gap: 8 },
+  movRow: {
+    display: 'flex', alignItems: 'center', gap: 14, padding: '9px 12px', background: '#1C1F22',
+    borderRadius: 6, border: '1px solid #2E3338', flexWrap: 'wrap',
+  },
+  movFecha: { fontSize: 12, color: '#D8D6D1', fontFamily: "'IBM Plex Mono', monospace", minWidth: 160 },
+  movObs: { fontSize: 12, color: '#8B9199', flex: 1 },
+
+  tabBar: {
+    display: 'flex', gap: 4, padding: '10px 28px 0', background: '#1A1D20', borderBottom: '1px solid #2E3338',
+  },
+  tabBtn: {
+    background: 'none', border: 'none', borderBottom: '2px solid transparent', color: '#8B9199',
+    padding: '10px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: "'Oswald', sans-serif",
+    letterSpacing: '0.02em',
+  },
+  tabBtnActive: { color: '#E8E6E1', borderBottomColor: '#5B7A99' },
+
+  unidadesWrap: { padding: '24px 32px' },
+  unidadesGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 12 },
+  unidadCard: {
+    background: '#24282C', border: '1px solid #2E3338', borderRadius: 8, padding: 14,
+  },
+  unidadNombre: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 600, color: '#E8E6E1', marginBottom: 4 },
+  unidadEquipo: { fontSize: 11, color: '#5B7A99', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: 6 },
+  unidadDescripcion: { fontSize: 12, color: '#8B9199', marginBottom: 10, lineHeight: 1.4 },
+  unidadAcciones: { display: 'flex', gap: 8 },
+  unidadesVacioAviso: {
+    fontSize: 11.5, color: '#E8871E', background: 'rgba(232,135,30,0.1)', border: '1px solid rgba(232,135,30,0.3)',
+    borderRadius: 6, padding: '8px 10px', marginTop: 4,
+  },
+};

@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
 import { useAuth } from '../components/AuthContext';
 import CilindrosApp from './CilindrosApp';
+import GasesApp from '../gases/GasesApp';
 
 // ============================================================================
-// PANEL SUPERADMIN (bitrom) — versión genérica por ahora.
-// Deja entrar a ver Cilindros directamente. La vista de Gases y el panel de
-// usuarios/auditoría se suman después de la presentación.
+// PANEL SUPERADMIN (bitrom) — ahora sí ve ambos módulos completos.
 // ============================================================================
 export default function PanelSuperadmin() {
   const { user, logout } = useAuth();
@@ -28,12 +27,7 @@ export default function PanelSuperadmin() {
 
       <div>
         {vista === 'cilindros' && <CilindrosApp />}
-        {vista === 'gases' && (
-          <div style={s.placeholder}>
-            La vista de Gases desde el panel superadmin todavía no está conectada.
-            Por ahora, entrá con un usuario de gases (ej: admin.bra) para verla.
-          </div>
-        )}
+        {vista === 'gases' && <GasesApp />}
       </div>
     </div>
   );
@@ -54,8 +48,5 @@ const s = {
   tabActive: { background: '#262B30', color: '#5B7A99', borderColor: '#5B7A99' },
   logout: {
     background: 'none', border: 'none', color: '#8B9199', fontSize: 12, cursor: 'pointer',
-  },
-  placeholder: {
-    padding: 60, textAlign: 'center', color: '#8B9199', fontFamily: 'sans-serif', fontSize: 14,
   },
 };
