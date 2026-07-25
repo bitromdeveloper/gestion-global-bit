@@ -112,9 +112,28 @@ export default function CilindrosApp() {
     return catalogo.flatMap((c) => {
       const reps = repPorCodigo[c.codigo];
       if (!reps || reps.length === 0) {
-        // Un código sin ninguna OC registrada no es una reparación real —
-        // no debe aparecer en ninguna lista ni contar en ningún total.
-        return [];
+        // Se guarda igual (para un futuro dashboard de "dados de alta y nunca
+        // usados"), pero se filtra antes de armar groups/equipos más abajo,
+        // así no aparece en la navegación normal.
+        return [{
+          codigo: c.codigo,
+          descripcion_original: c.descripcion_original,
+          descripcion_corta: c.descripcion_original,
+          equipo: c.equipo,
+          grupo_final: c.descripcion_unificada || 'SIN CLASIFICAR',
+          pendiente_revision: c.pendiente_revision,
+          fecha_solicitud: null,
+          proveedor: null,
+          oc_definitiva: null,
+          precio_total: null,
+          moneda: 'ARS',
+          remito_nro: null,
+          remito_estado: null,
+          remito_fecha: null,
+          factura_numero: null,
+          factura_estado: null,
+          estado_reparacion: 'SIN_REPARACIONES',
+        }];
       }
       return reps.map((r) => ({
         codigo: c.codigo,
@@ -141,6 +160,7 @@ export default function CilindrosApp() {
   const groups = useMemo(() => {
     const map = {};
     data.forEach((r) => {
+      if (r.estado_reparacion === 'SIN_REPARACIONES') return; // se guardan en "data" para uso futuro, pero no navegan
       const key = r.grupo_final;
       if (!map[key]) map[key] = { name: key, codes: new Set(), rows: [] };
       map[key].codes.add(r.codigo);
