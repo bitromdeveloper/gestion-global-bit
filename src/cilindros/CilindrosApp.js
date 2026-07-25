@@ -2,9 +2,11 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../components/AuthContext';
 import styles from './styles';
-import { parseDate, esInactivo, diasDesde } from './helpers';
-import { Stat } from './SmallComponents';
+import { parseDate, esInactivo, diasDesde, ESTADO_OPERATIVO_STYLE, fmtOC } from './helpers';
+import { obtenerCotizacion, convertirAUSD } from './cotizaciones';
 import UnidadesTab from './UnidadesTab';
+import ImportarReporte from './ImportarReporte';
+import PendientesCatalogacion from './PendientesCatalogacion';
 import VistaCilindros from './VistaCilindros';
 
 // ============================================================================
@@ -23,6 +25,7 @@ export default function CilindrosApp() {
   const puedeRegistrarReparacion = esAdmin || user?.rol === 'compras';
 
   const [menuUsuarioAbierto, setMenuUsuarioAbierto] = useState(false);
+  const [menuAdminAbierto, setMenuAdminAbierto] = useState(false);
   const [mostrarCambiarPass, setMostrarCambiarPass] = useState(false);
   const [passForm, setPassForm] = useState({ actual: '', nueva: '', confirmar: '' });
   const [passMsg, setPassMsg] = useState({ type: '', text: '' });
@@ -109,31 +112,17 @@ export default function CilindrosApp() {
     return catalogo.flatMap((c) => {
       const reps = repPorCodigo[c.codigo];
       if (!reps || reps.length === 0) {
-        return [{
-          codigo: c.codigo,
-          descripcion_original: c.descripcion_original,
-          descripcion_corta: c.descripcion_original,
-          equipo: c.equipo,
-          grupo_final: c.descripcion_unificada || c.equipo || 'SIN CLASIFICAR',
-          fecha_solicitud: null,
-          proveedor: null,
-          oc_definitiva: null,
-          precio_total: null,
-          moneda: 'ARS',
-          remito_nro: null,
-          remito_estado: null,
-          remito_fecha: null,
-          factura_numero: null,
-          factura_estado: null,
-          estado_reparacion: 'SIN_REPARACIONES',
-        }];
+        // Un código sin ninguna OC registrada no es una reparación real —
+        // no debe aparecer en ninguna lista ni contar en ningún total.
+        return [];
       }
       return reps.map((r) => ({
         codigo: c.codigo,
         descripcion_original: c.descripcion_original,
         descripcion_corta: c.descripcion_original,
         equipo: c.equipo,
-        grupo_final: c.descripcion_unificada || c.equipo || 'SIN CLASIFICAR',
+        grupo_final: c.descripcion_unificada || 'SIN CLASIFICAR',
+        pendiente_revision: c.pendiente_revision,
         fecha_solicitud: r.fecha_solicitud,
         proveedor: r.proveedor,
         oc_definitiva: r.oc_definitiva,
@@ -159,14 +148,45 @@ export default function CilindrosApp() {
     });
     return Object.values(map).map((g) => {
       const fechas = g.rows.map((r) => r.fecha_solicitud).filter(Boolean).sort().reverse();
-      return { ...g, codeCount: g.codes.size, repairCount: g.rows.length, ultimaActividad: fechas[0] || null };
+      // Equipo de este grupo: el más común entre sus filas (normalmente es uno solo)
+      const conteoEquipo = {};
+      g.rows.forEach((r) => {
+        const eq = r.equipo || 'SIN IDENTIFICAR';
+        conteoEquipo[eq] = (conteoEquipo[eq] || 0) + 1;
+      });
+      const equipo = Object.entries(conteoEquipo).sort((a, b) => b[1] - a[1])[0][0];
+      return { ...g, codeCount: g.codes.size, repairCount: g.rows.length, ultimaActividad: fechas[0] || null, equipo };
     });
   }, [data]);
 
+  // Nivel Equipo (nuevo): agrupa los "groups" de arriba (por descripción) según
+  // a qué equipo pertenecen. El sidebar ahora navega por acá primero.
+  const equipos = useMemo(() => {
+    const map = {};
+    groups.forEach((g) => {
+      if (!map[g.equipo]) map[g.equipo] = { name: g.equipo, codes: new Set(), grupos: [] };
+      g.codes.forEach((c) => map[g.equipo].codes.add(c));
+      map[g.equipo].grupos.push(g);
+    });
+    return Object.values(map)
+      .map((eq) => ({
+        ...eq,
+        codeCount: eq.codes.size,
+        grupos: [...eq.grupos].sort((a, b) => b.codeCount - a.codeCount),
+      }))
+      .sort((a, b) => b.codeCount - a.codeCount);
+  }, [groups]);
+
+  const [selectedEquipo, setSelectedEquipo] = useState(null);
+
   const [ordenSidebar, setOrdenSidebar] = useState('cantidad'); // 'cantidad' | 'reciente'
 
-  const groupsOrdenados = useMemo(() => {
-    const copia = [...groups];
+  const equiposOrdenados = useMemo(() => {
+    const conUltimaActividad = equipos.map((eq) => ({
+      ...eq,
+      ultimaActividad: eq.grupos.reduce((max, g) => (g.ultimaActividad && g.ultimaActividad > (max || '') ? g.ultimaActividad : max), null),
+    }));
+    const copia = [...conUltimaActividad];
     if (ordenSidebar === 'reciente') {
       copia.sort((a, b) => {
         if (!a.ultimaActividad) return 1;
@@ -177,7 +197,7 @@ export default function CilindrosApp() {
       copia.sort((a, b) => b.codeCount - a.codeCount);
     }
     return copia;
-  }, [groups, ordenSidebar]);
+  }, [equipos, ordenSidebar]);
 
   const [query, setQuery] = useState('');
 
@@ -192,15 +212,67 @@ export default function CilindrosApp() {
   const [ocultarInactivos, setOcultarInactivos] = useState(false);
   const [filtroEstadoOperativo, setFiltroEstadoOperativo] = useState('todos'); // 'todos' | 'en_uso' | 'en_stock' | 'en_proveedor' | 'roto_en_almacen' | 'baja'
 
-  const filteredGroups = useMemo(() => {
-    if (!query.trim()) return groupsOrdenados;
-    const q = query.trim().toUpperCase();
-    return groupsOrdenados.filter(
-      (g) => g.name.toUpperCase().includes(q) || g.rows.some((r) => r.codigo.toUpperCase().includes(q))
-    );
-  }, [groupsOrdenados, query]);
+  // Orden de la lista de descripciones dentro de un equipo (con dirección,
+  // para que el encabezado clickeable pueda alternar ▲/▼)
+  const DIRECCION_DEFAULT_DESC = { cantidad: 'desc', descripcion: 'asc' };
+  const [ordenDescripciones, setOrdenDescripciones] = useState('cantidad'); // 'cantidad' | 'descripcion'
+  const [ordenDescripcionesDir, setOrdenDescripcionesDir] = useState('desc'); // 'asc' | 'desc'
 
-  const activeGroup = groupsOrdenados.find((g) => g.name === selectedGroup) || null;
+  function ordenarDescripcionesPor(campo) {
+    if (campo === ordenDescripciones) {
+      setOrdenDescripcionesDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setOrdenDescripciones(campo);
+      setOrdenDescripcionesDir(DIRECCION_DEFAULT_DESC[campo] || 'asc');
+    }
+  }
+
+  // Orden de la lista de códigos dentro de una descripción
+  const DIRECCION_DEFAULT_CODIGOS = { fecha: 'desc', codigo: 'asc', descripcion: 'asc', proveedor: 'asc', monto: 'desc', oc: 'asc' };
+  const [ordenCodigos, setOrdenCodigos] = useState('fecha'); // 'fecha' | 'codigo' | 'descripcion' | 'proveedor' | 'monto' | 'oc'
+  const [ordenCodigosDir, setOrdenCodigosDir] = useState('desc'); // 'asc' | 'desc'
+
+  function ordenarCodigosPor(campo) {
+    if (campo === ordenCodigos) {
+      setOrdenCodigosDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setOrdenCodigos(campo);
+      setOrdenCodigosDir(DIRECCION_DEFAULT_CODIGOS[campo] || 'asc');
+    }
+  }
+
+  // Cuántos ítems mostrar antes de pedir "Mostrar más" (para no tirar todo junto)
+  const PAGINA = 20;
+  const [verDescripciones, setVerDescripciones] = useState(PAGINA);
+  const [verCodigos, setVerCodigos] = useState(PAGINA);
+
+  useEffect(() => { setVerDescripciones(PAGINA); }, [selectedEquipo]);
+  useEffect(() => { setVerCodigos(PAGINA); }, [selectedGroup]);
+
+  const filteredEquipos = useMemo(() => {
+    if (!query.trim()) return equiposOrdenados;
+    const q = query.trim().toUpperCase();
+    return equiposOrdenados.filter(
+      (eq) =>
+        eq.name.toUpperCase().includes(q) ||
+        eq.grupos.some((g) => g.name.toUpperCase().includes(q) || g.rows.some((r) => r.codigo.toUpperCase().includes(q)))
+    );
+  }, [equiposOrdenados, query]);
+
+  const activeEquipo = equiposOrdenados.find((eq) => eq.name === selectedEquipo) || null;
+  const activeGroup = groups.find((g) => g.name === selectedGroup) || null;
+
+  const descripcionesDelEquipoOrdenadas = useMemo(() => {
+    if (!activeEquipo) return [];
+    const copia = [...activeEquipo.grupos];
+    const dir = ordenDescripcionesDir === 'asc' ? 1 : -1;
+    if (ordenDescripciones === 'descripcion') {
+      copia.sort((a, b) => dir * a.name.localeCompare(b.name));
+    } else {
+      copia.sort((a, b) => dir * (a.codeCount - b.codeCount));
+    }
+    return copia;
+  }, [activeEquipo, ordenDescripciones, ordenDescripcionesDir]);
 
   const codesInGroup = useMemo(() => {
     if (!activeGroup) return [];
@@ -267,6 +339,37 @@ export default function CilindrosApp() {
       .filter((r) => r.codigo === selectedCode)
       .sort((a, b) => (parseDate(b.fecha_solicitud) || 0) - (parseDate(a.fecha_solicitud) || 0));
   }, [selectedCode, data]);
+
+  // ---- Conversión a USD (cotización oficial histórica) ----
+  const [cotizacionesPorFecha, setCotizacionesPorFecha] = useState({}); // fecha -> {compra,venta} | null
+
+  useEffect(() => {
+    if (!selectedCode) return;
+    const fechas = [...new Set(selectedCodeRows.map((r) => r.fecha_solicitud).filter(Boolean))];
+    const faltantes = fechas.filter((f) => !(f in cotizacionesPorFecha));
+    if (faltantes.length === 0) return;
+
+    let cancelado = false;
+    (async () => {
+      for (const fecha of faltantes) {
+        const cot = await obtenerCotizacion(fecha);
+        if (cancelado) return;
+        setCotizacionesPorFecha((prev) => ({ ...prev, [fecha]: cot }));
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [selectedCode, selectedCodeRows]);
+
+  function precioEnUSD(row) {
+    const cot = cotizacionesPorFecha[row.fecha_solicitud];
+    return convertirAUSD(row.precio_total, row.moneda, cot);
+  }
+
+  const gastoTotalUSD = useMemo(() => {
+    const valores = selectedCodeRows.map(precioEnUSD).filter((v) => v !== null);
+    if (valores.length === 0) return null;
+    return valores.reduce((a, b) => a + b, 0);
+  }, [selectedCodeRows, cotizacionesPorFecha]);
 
   const estadoActualPorCodigo = useMemo(() => {
     // Importante: se compara por "id" (orden real de creación en la base), no por
@@ -618,7 +721,7 @@ export default function CilindrosApp() {
           origen: e.origen,
         };
       })
-      .sort((a, b) => (b.dias ?? -1) - (a.dias ?? -1));
+      .sort((a, b) => (a.dias ?? Infinity) - (b.dias ?? Infinity));
   }, [estadoEfectivoPorCodigo, catalogo]);
 
   // Alertas = el subconjunto de la lista de arriba con 30+ días
@@ -629,6 +732,8 @@ export default function CilindrosApp() {
 
   // Vista "todos en poder del proveedor" que se abre con el botón del dashboard
   const [mostrarTodosEnProveedor, setMostrarTodosEnProveedor] = useState(false);
+  const [mostrarImportar, setMostrarImportar] = useState(false);
+  const [mostrarPendientes, setMostrarPendientes] = useState(false);
 
   // Filtro final por estado operativo (usa estadoEfectivoPorCodigo, que se
   // calcula más arriba combinando movimientos + reparaciones histórico).
@@ -638,6 +743,39 @@ export default function CilindrosApp() {
       (c) => estadoEfectivoPorCodigo[c.codigo]?.estado === filtroEstadoOperativo
     );
   }, [codesInGroupFiltradosBase, filtroEstadoOperativo, estadoEfectivoPorCodigo]);
+
+  const codesInGroupOrdenados = useMemo(() => {
+    const copia = [...codesInGroupFiltrados];
+    const dir = ordenCodigosDir === 'asc' ? 1 : -1;
+    switch (ordenCodigos) {
+      case 'codigo':
+        copia.sort((a, b) => dir * a.codigo.localeCompare(b.codigo));
+        break;
+      case 'descripcion':
+        copia.sort((a, b) => dir * (a.last.descripcion_corta || '').localeCompare(b.last.descripcion_corta || ''));
+        break;
+      case 'proveedor':
+        copia.sort((a, b) => dir * (a.last.proveedor || '').localeCompare(b.last.proveedor || ''));
+        break;
+      case 'monto':
+        copia.sort((a, b) => dir * ((Number(a.last.precio_total) || 0) - (Number(b.last.precio_total) || 0)));
+        break;
+      case 'oc':
+        copia.sort((a, b) => dir * ((parseFloat(fmtOC(a.last.oc_definitiva)) || 0) - (parseFloat(fmtOC(b.last.oc_definitiva)) || 0)));
+        break;
+      default: // 'fecha'
+        copia.sort((a, b) => dir * ((parseDate(a.last.fecha_solicitud) || 0) - (parseDate(b.last.fecha_solicitud) || 0)));
+    }
+    return copia;
+  }, [codesInGroupFiltrados, ordenCodigos, ordenCodigosDir]);
+
+  const descripcionesVisibles = descripcionesDelEquipoOrdenadas.slice(0, verDescripciones);
+  const codigosVisibles = codesInGroupOrdenados.slice(0, verCodigos);
+
+  const cantidadPendientes = useMemo(
+    () => catalogo.filter((c) => c.pendiente_revision).length,
+    [catalogo]
+  );
 
   const totals = useMemo(() => {
     const codes = new Set(catalogo.map((c) => c.codigo));
@@ -649,7 +787,10 @@ export default function CilindrosApp() {
 
   function irACodigo(codigo) {
     const grupo = groups.find((g) => g.codes.has(codigo));
-    if (grupo) setSelectedGroup(grupo.name);
+    if (grupo) {
+      setSelectedEquipo(grupo.equipo);
+      setSelectedGroup(grupo.name);
+    }
     setSelectedCode(codigo);
     setMostrarHistorialMovimientos(false);
     setBusquedaGlobal('');
@@ -669,6 +810,37 @@ export default function CilindrosApp() {
       )
       .slice(0, 8);
   }, [busquedaGlobal, catalogo]);
+
+  // ---- Notificaciones en vivo (Supabase Realtime) ----
+  const [notificaciones, setNotificaciones] = useState([]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel('cilindros-movimientos-realtime')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'cilindros', table: 'movimientos' },
+        (payload) => {
+          const m = payload.new;
+          // No te notifiques a vos mismo por algo que acabás de cargar
+          if (m.registrado_por === user?.id) return;
+          const c = catalogo.find((x) => x.codigo === m.codigo);
+          const es = ESTADO_OPERATIVO_STYLE[m.estado] || { label: m.estado, color: '#8B9199' };
+          const id = `${m.id}-${Date.now()}`;
+          const texto = `${m.codigo} — ${c?.descripcion_unificada || ''} pasó a "${es.label}"`;
+          setNotificaciones((prev) => [...prev, { id, texto, color: es.color }]);
+          setTimeout(() => {
+            setNotificaciones((prev) => prev.filter((n) => n.id !== id));
+          }, 7000);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canal);
+    };
+    // eslint-disable-next-line
+  }, [catalogo, user?.id]);
 
   if (loading) {
     return (
@@ -690,7 +862,9 @@ export default function CilindrosApp() {
   const vm = {
     query, setQuery,
     ordenSidebar, setOrdenSidebar,
-    filteredGroups,
+    filteredEquipos,
+    selectedEquipo, setSelectedEquipo,
+    activeEquipo,
     selectedGroup, setSelectedGroup,
     selectedCode, setSelectedCode,
     codeQuery, setCodeQuery,
@@ -700,7 +874,15 @@ export default function CilindrosApp() {
     groups,
     activeGroup,
     codesInGroup,
-    codesInGroupFiltrados,
+    codesInGroupOrdenados,
+    codigosVisibles,
+    ordenCodigos, ordenCodigosDir, ordenarCodigosPor,
+    verCodigos, setVerCodigos,
+    PAGINA,
+    descripcionesDelEquipoOrdenadas,
+    descripcionesVisibles,
+    ordenDescripciones, ordenDescripcionesDir, ordenarDescripcionesPor,
+    verDescripciones, setVerDescripciones,
     cantidadInactivosEnGrupo,
     chartMensual,
     selectedCodeRows,
@@ -731,6 +913,8 @@ export default function CilindrosApp() {
     formEditarMovimiento, setFormEditarMovimiento,
     guardandoEditarMovimiento, guardarEditarMovimiento,
     setEditandoMovimientoId,
+    precioEnUSD,
+    gastoTotalUSD,
   };
 
   return (
@@ -742,22 +926,70 @@ export default function CilindrosApp() {
         ::-webkit-scrollbar-thumb { background: #3A4048; border-radius: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         .row-hover:hover { background: #262B30 !important; }
-        .card-hover:hover { border-color: #5B7A99 !important; transform: translateY(-1px); }
+        .card-hover:hover { background: #262A2E !important; }
+        .back-hover:hover { background: rgba(91,122,153,0.2) !important; }
         button { font-family: inherit; }
       `}</style>
 
-      <div style={styles.header}>
-        <div style={styles.headerLeft}>
-          <div style={styles.plateIcon}>⛭</div>
-          <div>
-            <div style={styles.title}>REGISTRO DE CILINDROS · IUSA</div>
-            <div style={styles.subtitle}>Seguimiento de reparaciones — Base Cliba I.U.S.A.</div>
+      <div style={styles.toastStack}>
+        {notificaciones.map((n) => (
+          <div key={n.id} style={{ ...styles.toast, borderLeftColor: n.color }}>
+            {n.texto}
           </div>
+        ))}
+      </div>
+
+      <div style={styles.headerRow1}>
+        <div style={styles.headerBrand}>
+          <div style={styles.plateIcon}>⛭</div>
+          <div style={styles.title}>REGISTRO DE CILINDROS</div>
+        </div>
+
+        <div style={styles.headerTabs}>
+          <button
+            style={{ ...styles.tabBtn, ...(vistaPrincipal === 'cilindros' ? styles.tabBtnActive : {}) }}
+            onClick={() => setVistaPrincipal('cilindros')}
+          >
+            Cilindros
+          </button>
+          <button
+            style={{ ...styles.tabBtn, ...(vistaPrincipal === 'unidades' ? styles.tabBtnActive : {}) }}
+            onClick={() => setVistaPrincipal('unidades')}
+          >
+            Unidades {unidades.length > 0 ? `(${unidades.length})` : ''}
+          </button>
         </div>
 
         <div style={{ position: 'relative' }}>
+          <button style={styles.userChip} onClick={() => setMenuUsuarioAbierto((v) => !v)}>
+            <span style={styles.userAvatar}>{(user?.nombre || '?').charAt(0).toUpperCase()}</span>
+            <span style={styles.userChipText}>
+              <span style={styles.userChipName}>{user?.nombre}</span>
+              <span style={styles.userChipRol}>{user?.rol}</span>
+            </span>
+            <span style={{ color: '#5A6068', fontSize: 10 }}>▾</span>
+          </button>
+
+          {menuUsuarioAbierto && (
+            <div style={styles.userMenu}>
+              <button
+                style={styles.userMenuItem}
+                onClick={() => { setMostrarCambiarPass(true); setMenuUsuarioAbierto(false); }}
+              >
+                Cambiar contraseña
+              </button>
+              <button style={{ ...styles.userMenuItem, color: '#E8871E' }} onClick={logout}>
+                Cerrar sesión
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={styles.headerRow2}>
+        <div style={{ position: 'relative', flex: 1, maxWidth: 340 }}>
           <input
-            placeholder="🔍 Buscar código o descripción..."
+            placeholder="Buscar código o descripción..."
             value={busquedaGlobal}
             onChange={(e) => { setBusquedaGlobal(e.target.value); setBusquedaGlobalAbierta(true); }}
             onFocus={() => setBusquedaGlobalAbierta(true)}
@@ -781,43 +1013,56 @@ export default function CilindrosApp() {
           )}
         </div>
 
-        <div style={styles.headerStats}>
-          <Stat label="Códigos activos" value={totals.codigos} />
-          <Stat label="Reparaciones (OC)" value={totals.reparaciones} />
-          <Stat label="En proveedor" value={totals.enProveedor} accent="#E8871E" />
-          <Stat label="En almacén" value={totals.enAlmacen} accent="#4FA98C" />
+        <div style={styles.statsInline}>
+          <span>{totals.codigos} códigos</span>
+          <span style={styles.statsDivider}>·</span>
+          <span>{totals.reparaciones} reparaciones</span>
+          <span style={styles.statsDivider}>·</span>
+          <span style={{ color: '#C97369' }}>{totals.enProveedor} en proveedor</span>
+          <span style={styles.statsDivider}>·</span>
+          <span style={{ color: '#4FA98C' }}>{totals.enAlmacen} en almacén</span>
+        </div>
+
+        <div style={styles.headerActions}>
           <button
-            style={{ ...styles.adminBtnPrimary, ...(mostrarTodosEnProveedor ? styles.filterToggleActive : {}) }}
+            style={{ ...styles.adminBtn, ...(mostrarTodosEnProveedor ? styles.filterToggleActive : {}) }}
             onClick={() => setMostrarTodosEnProveedor((v) => !v)}
           >
-            📦 En poder del proveedor ({cilindrosEnProveedorORoto.length})
+            Ver en proveedor
           </button>
+
+          {(esAdmin || puedeRegistrarReparacion) && (
+            <div style={{ position: 'relative' }}>
+              <button
+                style={{ ...styles.adminBtn, ...(cantidadPendientes > 0 ? styles.filterToggleActive : {}) }}
+                onClick={() => setMenuAdminAbierto((v) => !v)}
+              >
+                Admin {cantidadPendientes > 0 ? `(${cantidadPendientes})` : ''} ▾
+              </button>
+              {menuAdminAbierto && (
+                <div style={styles.userMenu}>
+                  {puedeRegistrarReparacion && (
+                    <button
+                      style={styles.userMenuItem}
+                      onClick={() => { setMostrarImportar(true); setMenuAdminAbierto(false); }}
+                    >
+                      Importar reporte
+                    </button>
+                  )}
+                  {esAdmin && (
+                    <button
+                      style={styles.userMenuItem}
+                      onClick={() => { setMostrarPendientes(true); setMenuAdminAbierto(false); }}
+                    >
+                      Pendientes de catalogar {cantidadPendientes > 0 ? `(${cantidadPendientes})` : ''}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <button style={styles.refreshBtn} onClick={cargarDatos} title="Actualizar datos">↻</button>
-
-          <div style={{ position: 'relative' }}>
-            <button style={styles.userChip} onClick={() => setMenuUsuarioAbierto((v) => !v)}>
-              <span style={styles.userAvatar}>{(user?.nombre || '?').charAt(0).toUpperCase()}</span>
-              <span style={styles.userChipText}>
-                <span style={styles.userChipName}>{user?.nombre}</span>
-                <span style={styles.userChipRol}>{user?.rol}</span>
-              </span>
-              <span style={{ color: '#5A6068', fontSize: 10 }}>▾</span>
-            </button>
-
-            {menuUsuarioAbierto && (
-              <div style={styles.userMenu}>
-                <button
-                  style={styles.userMenuItem}
-                  onClick={() => { setMostrarCambiarPass(true); setMenuUsuarioAbierto(false); }}
-                >
-                  Cambiar contraseña
-                </button>
-                <button style={{ ...styles.userMenuItem, color: '#E8871E' }} onClick={logout}>
-                  Cerrar sesión
-                </button>
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
@@ -907,20 +1152,22 @@ export default function CilindrosApp() {
         </div>
       )}
 
-      <div style={styles.tabBar}>
-        <button
-          style={{ ...styles.tabBtn, ...(vistaPrincipal === 'cilindros' ? styles.tabBtnActive : {}) }}
-          onClick={() => setVistaPrincipal('cilindros')}
-        >
-          Cilindros
-        </button>
-        <button
-          style={{ ...styles.tabBtn, ...(vistaPrincipal === 'unidades' ? styles.tabBtnActive : {}) }}
-          onClick={() => setVistaPrincipal('unidades')}
-        >
-          Unidades {unidades.length > 0 ? `(${unidades.length})` : ''}
-        </button>
-      </div>
+      {mostrarImportar && (
+        <ImportarReporte
+          catalogoCodigos={catalogo.map((c) => c.codigo)}
+          usuarioId={user?.id}
+          onImportado={cargarDatos}
+          onCerrar={() => setMostrarImportar(false)}
+        />
+      )}
+
+      {mostrarPendientes && (
+        <PendientesCatalogacion
+          usuarioId={user?.id}
+          onActualizado={cargarDatos}
+          onCerrar={() => setMostrarPendientes(false)}
+        />
+      )}
 
       {vistaPrincipal === 'cilindros' && (
         <VistaCilindros vm={vm} />

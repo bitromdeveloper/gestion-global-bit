@@ -29,6 +29,7 @@ export default function Dashboard() {
   const [modalTipo, setModalTipo] = useState(null); // tipo seleccionado para el popup
   const [filtroUbic, setFiltroUbic]     = useState('Todas');
   const [filtroEstado, setFiltroEstado] = useState('Todos');
+  const [filtroCodigo, setFiltroCodigo] = useState('');
 
   useEffect(() => { fetchTubos(); }, []);
 
@@ -66,6 +67,7 @@ export default function Dashboard() {
   const filtrados = tubos.filter(t => {
     if (filtroUbic   !== 'Todas' && t.ubicacion !== filtroUbic)   return false;
     if (filtroEstado !== 'Todos' && t.estado    !== filtroEstado) return false;
+    if (filtroCodigo.trim() && !t.codigo?.toUpperCase().includes(filtroCodigo.trim().toUpperCase())) return false;
     return true;
   });
 
@@ -145,6 +147,12 @@ export default function Dashboard() {
       {/* ── Tabla detallada con filtros ── */}
       <div style={s.section}>
         <div style={s.filtrosRow}>
+          <input
+            style={s.buscarInput}
+            placeholder="🔍 Buscar código..."
+            value={filtroCodigo}
+            onChange={e => setFiltroCodigo(e.target.value)}
+          />
           <select style={s.select} value={filtroUbic} onChange={e => setFiltroUbic(e.target.value)}>
             <option value="Todas">Todas las ubicaciones</option>
             {UBICACIONES.map(u => <option key={u}>{u}</option>)}
@@ -307,6 +315,7 @@ const s = {
   // Tabla
   filtrosRow:      { display:'flex', gap:10, marginBottom:16, alignItems:'center', flexWrap:'wrap' },
   select:          { padding:'7px 12px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:13, color:'#374151', background:'#fff' },
+  buscarInput:     { padding:'7px 12px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:13, color:'#374151', background:'#fff', width:180 },
   count:           { fontSize:13, color:'#64748b' },
   tableWrap:       { overflowX:'auto' },
   table:           { width:'100%', borderCollapse:'collapse' },

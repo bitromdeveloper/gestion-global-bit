@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import styles from './styles';
-import { STATUS_STYLE, ESTADO_OPERATIVO_STYLE, fmtDate, fmtMoney, fmtHaceTiempo, esInactivo } from './helpers';
+import { STATUS_STYLE, ESTADO_OPERATIVO_STYLE, fmtDate, fmtMoney, fmtHaceTiempo, esInactivo, fmtOC } from './helpers';
 import { Field } from './SmallComponents';
 
 // ============================================================================
@@ -15,7 +15,9 @@ export default function VistaCilindros({ vm }) {
   const {
     query, setQuery,
     ordenSidebar, setOrdenSidebar,
-    filteredGroups,
+    filteredEquipos,
+    selectedEquipo, setSelectedEquipo,
+    activeEquipo,
     selectedGroup, setSelectedGroup,
     selectedCode, setSelectedCode,
     codeQuery, setCodeQuery,
@@ -25,7 +27,15 @@ export default function VistaCilindros({ vm }) {
     groups,
     activeGroup,
     codesInGroup,
-    codesInGroupFiltrados,
+    codesInGroupOrdenados,
+    codigosVisibles,
+    ordenCodigos, ordenCodigosDir, ordenarCodigosPor,
+    verCodigos, setVerCodigos,
+    PAGINA,
+    descripcionesDelEquipoOrdenadas,
+    descripcionesVisibles,
+    ordenDescripciones, ordenDescripcionesDir, ordenarDescripcionesPor,
+    verDescripciones, setVerDescripciones,
     cantidadInactivosEnGrupo,
     chartMensual,
     selectedCodeRows,
@@ -56,17 +66,31 @@ export default function VistaCilindros({ vm }) {
     formEditarMovimiento, setFormEditarMovimiento,
     guardandoEditarMovimiento, guardarEditarMovimiento,
     setEditandoMovimientoId,
+    precioEnUSD,
+    gastoTotalUSD,
   } = vm;
+
+  const [sidebarColapsado, setSidebarColapsado] = useState(false);
 
   return (
       <div style={styles.body}>
-        <div style={styles.sidebar}>
+        <div style={{ ...styles.sidebar, ...(sidebarColapsado ? styles.sidebarColapsado : {}) }}>
+          <button
+            style={styles.sidebarToggle}
+            onClick={() => setSidebarColapsado((v) => !v)}
+            title={sidebarColapsado ? 'Expandir lista' : 'Colapsar lista'}
+          >
+            {sidebarColapsado ? '›' : '‹'}
+          </button>
+          {!sidebarColapsado && (
           <input
             placeholder="Buscar tipo o código..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             style={styles.search}
           />
+          )}
+          {!sidebarColapsado && (
           <div style={styles.sortToggle}>
             <span style={styles.sortToggleLabel}>Ordenar por</span>
             <button
@@ -82,37 +106,48 @@ export default function VistaCilindros({ vm }) {
               Actividad reciente
             </button>
           </div>
+          )}
+          {!sidebarColapsado && (
           <div style={styles.sidebarScroll}>
-            {filteredGroups.map((g) => (
+            {filteredEquipos.map((eq) => (
               <div
-                key={g.name}
-                onClick={() => { setSelectedGroup(g.name); setSelectedCode(null); setCodeQuery(''); setFechaDesde(''); setFechaHasta(''); setFiltroEstadoOperativo('todos'); }}
+                key={eq.name}
+                onClick={() => {
+                  setSelectedEquipo(eq.name);
+                  setSelectedGroup(null);
+                  setSelectedCode(null);
+                  setCodeQuery('');
+                  setFechaDesde('');
+                  setFechaHasta('');
+                  setFiltroEstadoOperativo('todos');
+                }}
                 style={{
                   ...styles.groupItem,
-                  ...(selectedGroup === g.name ? styles.groupItemActive : {}),
+                  ...(selectedEquipo === eq.name ? styles.groupItemActive : {}),
                 }}
                 className="row-hover"
               >
                 <div style={styles.groupItemTop}>
-                  <span style={styles.groupCount}>{g.codeCount}</span>
+                  <span style={styles.groupCount}>{eq.codeCount}</span>
                 </div>
-                <div style={styles.groupName}>{g.name}</div>
-                {ordenSidebar === 'reciente' && g.ultimaActividad && (
-                  <div style={styles.groupActividad}>{fmtHaceTiempo(g.ultimaActividad)}</div>
+                <div style={styles.groupName}>{eq.name}</div>
+                {ordenSidebar === 'reciente' && eq.ultimaActividad && (
+                  <div style={styles.groupActividad}>{fmtHaceTiempo(eq.ultimaActividad)}</div>
                 )}
               </div>
             ))}
           </div>
+          )}
         </div>
 
         <div style={styles.main}>
-          {!activeGroup && (
+          {!activeEquipo && !activeGroup && (
             <div style={styles.dashboard}>
               <div style={styles.dashboardHeader}>
                 <div style={styles.emptyIcon}>◧</div>
                 <div>
                   <div style={styles.emptyTitle}>Resumen general</div>
-                  <div style={styles.emptyText}>{groups.length} tipos de cilindro catalogados — elegí uno del listado para ver el detalle</div>
+                  <div style={styles.emptyText}>{groups.length} tipos de cilindro, agrupados por equipo — elegí uno del listado para ver el detalle</div>
                 </div>
               </div>
 
@@ -148,8 +183,62 @@ export default function VistaCilindros({ vm }) {
             </div>
           )}
 
+          {activeEquipo && !activeGroup && (
+            <div>
+              <button style={styles.backBtn} className="back-hover" onClick={() => setSelectedEquipo(null)}>← Todos los equipos</button>
+              <div style={styles.mainHeader}>
+                <h2 style={styles.mainTitle}>{activeEquipo.name}</h2>
+                <div style={styles.mainMeta}>{activeEquipo.codeCount} códigos · {activeEquipo.grupos.length} descripciones distintas</div>
+              </div>
+
+              <div style={styles.descList}>
+                <div style={styles.descListHeader}>
+                  <span
+                    style={styles.colHeaderItem}
+                    onClick={() => ordenarDescripcionesPor('descripcion')}
+                    className="row-hover"
+                  >
+                    Descripción {ordenDescripciones === 'descripcion' && (ordenDescripcionesDir === 'asc' ? '▲' : '▼')}
+                  </span>
+                  <span
+                    style={{ ...styles.colHeaderItem, ...styles.colHeaderRight }}
+                    onClick={() => ordenarDescripcionesPor('cantidad')}
+                    className="row-hover"
+                  >
+                    Cantidad {ordenDescripciones === 'cantidad' && (ordenDescripcionesDir === 'asc' ? '▲' : '▼')}
+                  </span>
+                </div>
+                {descripcionesVisibles.map((g) => (
+                  <div
+                    key={g.name}
+                    style={{ ...styles.descListItem, ...(selectedGroup === g.name ? styles.groupItemActive : {}) }}
+                    className="row-hover"
+                    onClick={() => {
+                      setSelectedGroup(g.name);
+                      setSelectedCode(null);
+                      setCodeQuery('');
+                      setFechaDesde('');
+                      setFechaHasta('');
+                      setFiltroEstadoOperativo('todos');
+                    }}
+                  >
+                    <span style={styles.descListNombre}>{g.name}</span>
+                    <span style={styles.descListCount}>{g.codeCount} código{g.codeCount === 1 ? '' : 's'}</span>
+                  </div>
+                ))}
+              </div>
+
+              {descripcionesDelEquipoOrdenadas.length > verDescripciones && (
+                <button style={styles.mostrarMasBtn} onClick={() => setVerDescripciones((v) => v + PAGINA)}>
+                  Mostrar más ({descripcionesDelEquipoOrdenadas.length - verDescripciones} restantes)
+                </button>
+              )}
+            </div>
+          )}
+
           {activeGroup && !selectedCode && (
             <div>
+              <button style={styles.backBtn} className="back-hover" onClick={() => setSelectedGroup(null)}>← Volver a {activeEquipo?.name || activeGroup.equipo}</button>
               <div style={styles.mainHeader}>
                 <h2 style={styles.mainTitle}>{activeGroup.name}</h2>
                 <div style={styles.mainMeta}>{codesInGroup.length} códigos · {activeGroup.repairCount} reparaciones registradas</div>
@@ -211,7 +300,7 @@ export default function VistaCilindros({ vm }) {
                     {ocultarInactivos ? 'Mostrar' : 'Ocultar'} sin actividad 4+ años ({cantidadInactivosEnGrupo})
                   </button>
                 )}
-                <span style={styles.filterCount}>{codesInGroupFiltrados.length} de {codesInGroup.length}</span>
+                <span style={styles.filterCount}>{codesInGroupOrdenados.length} de {codesInGroup.length}</span>
               </div>
 
               <div style={styles.chartCard}>
@@ -235,47 +324,96 @@ export default function VistaCilindros({ vm }) {
                 </div>
               </div>
 
-              {codesInGroupFiltrados.length === 0 && (
+              {codesInGroupOrdenados.length === 0 && (
                 <div style={styles.filterEmpty}>No hay códigos que coincidan con estos filtros.</div>
               )}
 
-              <div style={styles.codeGrid}>
-                {codesInGroupFiltrados.map(({ codigo, last, count }) => {
+              <div style={styles.codeListWrap}>
+                <div style={styles.codeListHeader}>
+                  <span style={{ ...styles.colHeaderItem, ...styles.colCodigo }} onClick={() => ordenarCodigosPor('codigo')} className="row-hover">
+                    Código {ordenCodigos === 'codigo' && (ordenCodigosDir === 'asc' ? '▲' : '▼')}
+                  </span>
+                  <span style={{ ...styles.colHeaderItem, ...styles.colDesc }} onClick={() => ordenarCodigosPor('descripcion')} className="row-hover">
+                    Descripción {ordenCodigos === 'descripcion' && (ordenCodigosDir === 'asc' ? '▲' : '▼')}
+                  </span>
+                  <span style={{ ...styles.colHeaderItem, ...styles.colProveedor }} onClick={() => ordenarCodigosPor('proveedor')} className="row-hover">
+                    Proveedor {ordenCodigos === 'proveedor' && (ordenCodigosDir === 'asc' ? '▲' : '▼')}
+                  </span>
+                  <span style={{ ...styles.colHeaderItem, ...styles.colFecha }} onClick={() => ordenarCodigosPor('fecha')} className="row-hover">
+                    Fecha OC {ordenCodigos === 'fecha' && (ordenCodigosDir === 'asc' ? '▲' : '▼')}
+                  </span>
+                  <span style={{ ...styles.colHeaderItem, ...styles.colMonto, ...styles.colHeaderRight }} onClick={() => ordenarCodigosPor('monto')} className="row-hover">
+                    Monto {ordenCodigos === 'monto' && (ordenCodigosDir === 'asc' ? '▲' : '▼')}
+                  </span>
+                  <span style={{ ...styles.colHeaderItem, ...styles.colOc }} onClick={() => ordenarCodigosPor('oc')} className="row-hover">
+                    N° OC {ordenCodigos === 'oc' && (ordenCodigosDir === 'asc' ? '▲' : '▼')}
+                  </span>
+                  <span style={{ ...styles.colHeaderItem, ...styles.colEstado }}>Estado</span>
+                  <span style={{ ...styles.colHeaderItem, ...styles.colRep, ...styles.colHeaderRight }}>Rep.</span>
+                </div>
+
+                {codigosVisibles.map(({ codigo, last, count }) => {
                   const st = STATUS_STYLE[last.estado_reparacion] || { color: '#8B9199', bg: 'rgba(139,145,153,0.14)', label: last.estado_reparacion, dot: '#5A6068' };
                   const inactivo = esInactivo(last.fecha_solicitud);
                   const bajaManual = estadoActualPorCodigo[codigo]?.estado === 'baja';
+                  const tag = last.pendiente_revision
+                    ? { texto: 'SIN CATALOGAR', color: '#E8871E' }
+                    : bajaManual
+                    ? { texto: 'BAJA', color: '#C97369' }
+                    : inactivo
+                    ? { texto: '4+ AÑOS', color: '#8B9199' }
+                    : null;
                   return (
-                    <div key={codigo} style={{ ...styles.codeCard, ...(inactivo || bajaManual ? styles.codeCardInactivo : {}) }} className="card-hover" onClick={() => { setSelectedCode(codigo); setMostrarHistorialMovimientos(false); }}>
-                      {bajaManual && <div style={{ ...styles.bajaTag, background: 'rgba(192,57,43,0.22)' }}>BAJA REGISTRADA</div>}
-                      {!bajaManual && inactivo && <div style={styles.bajaTag}>SIN ACTIVIDAD — 4+ años</div>}
-                      <div style={styles.codeCardTop}>
-                        <span style={styles.codeText}>{codigo}</span>
-                        <span style={{ ...styles.statusDot, background: st.dot }} />
-                      </div>
-                      <div style={styles.codeCardDesc}>{last.descripcion_corta}</div>
-                      <div style={styles.codeCardBottom}>
-                        <span style={{ ...styles.statusBadge, color: st.color, background: st.bg }}>{st.label}</span>
-                        <span style={styles.codeCardCount}>{count} rep.</span>
-                      </div>
-                      <div style={styles.codeCardDate}>
-                        Última OC: {fmtDate(last.fecha_solicitud)} {last.proveedor ? `· ${last.proveedor}` : ''}
-                        {last.fecha_solicitud && <span style={styles.codeCardHace}> · {fmtHaceTiempo(last.fecha_solicitud)}</span>}
-                      </div>
+                    <div
+                      key={codigo}
+                      style={{
+                        ...styles.codeListItem,
+                        borderLeftColor: st.dot,
+                        ...(inactivo || bajaManual || last.pendiente_revision ? styles.codeCardInactivo : {}),
+                      }}
+                      className="row-hover"
+                      onClick={() => { setSelectedCode(codigo); setMostrarHistorialMovimientos(false); }}
+                    >
+                      <span style={{ ...styles.codeListCodigo, ...styles.colCodigo }}>{codigo}</span>
+                      <span style={{ ...styles.codeListDesc, ...styles.colDesc }}>
+                        {last.descripcion_corta}
+                        {tag && <span style={{ ...styles.codeListTag, color: tag.color }}> · {tag.texto}</span>}
+                      </span>
+                      <span style={{ ...styles.codeListMeta, ...styles.colProveedor }}>{last.proveedor || '—'}</span>
+                      <span style={{ ...styles.codeListMeta, ...styles.colFecha }}>
+                        {fmtDate(last.fecha_solicitud)}
+                        {last.fecha_solicitud && <span style={styles.codeListHace}> ({fmtHaceTiempo(last.fecha_solicitud)})</span>}
+                      </span>
+                      <span style={{ ...styles.codeListMonto, ...styles.colMonto }}>{fmtMoney(last.precio_total, last.moneda)}</span>
+                      <span style={{ ...styles.codeListMeta, ...styles.colOc }}>{last.oc_definitiva ? fmtOC(last.oc_definitiva) : '—'}</span>
+                      <span style={{ ...styles.statusBadge, color: st.color, background: st.bg, ...styles.colEstado }}>{st.label}</span>
+                      <span style={{ ...styles.codeListCount, ...styles.colRep }}>{count}</span>
                     </div>
                   );
                 })}
               </div>
+
+              {codesInGroupOrdenados.length > verCodigos && (
+                <button style={styles.mostrarMasBtn} onClick={() => setVerCodigos((v) => v + PAGINA)}>
+                  Mostrar más ({codesInGroupOrdenados.length - verCodigos} restantes)
+                </button>
+              )}
             </div>
           )}
 
           {selectedCode && (
             <div>
-              <button style={styles.backBtn} onClick={() => setSelectedCode(null)}>← Volver a {activeGroup?.name}</button>
+              <button style={styles.backBtn} className="back-hover" onClick={() => setSelectedCode(null)}>← Volver a {activeGroup?.name}</button>
               <div style={styles.mainHeader}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
                   <div>
                     <h2 style={{ ...styles.mainTitle, fontFamily: "'IBM Plex Mono', monospace" }}>{selectedCode}</h2>
-                    <div style={styles.mainMeta}>{selectedCodeRows[0]?.descripcion_original} · {selectedCodeRows.length} reparaciones</div>
+                    <div style={styles.mainMeta}>
+                      {selectedCodeRows[0]?.descripcion_original} · {selectedCodeRows.length} reparaciones
+                      {gastoTotalUSD !== null && (
+                        <span style={styles.gastoTotalUsd}> · Gasto total: US$ {gastoTotalUSD.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
+                      )}
+                    </div>
                     {estadoActualPorCodigo[selectedCode]?.estado === 'baja' ? (
                       <div style={{ ...styles.bajaTag, marginTop: 8, display: 'inline-block', background: 'rgba(192,57,43,0.22)' }}>BAJA REGISTRADA</div>
                     ) : esInactivo(selectedCodeRows.find((r) => r.fecha_solicitud)?.fecha_solicitud) ? (
@@ -655,6 +793,40 @@ export default function VistaCilindros({ vm }) {
                 </div>
               )}
 
+              {selectedCodeRows.length > 1 && (
+                <div style={styles.chartCard}>
+                  <div style={styles.chartTitle}>Evolución del gasto en USD (oficial) por reparación</div>
+                  {(() => {
+                    const filasOrdenadas = [...selectedCodeRows].reverse();
+                    const todosLosUsd = filasOrdenadas
+                      .map((x) => (x.moneda === 'USD' ? Number(x.precio_total) : precioEnUSD(x)))
+                      .filter((v) => v !== null && v !== undefined);
+                    const max = Math.max(...todosLosUsd, 1);
+                    return (
+                      <div style={styles.chartWrap}>
+                        {filasOrdenadas.map((r, i) => {
+                          const usd = r.moneda === 'USD' ? Number(r.precio_total) : precioEnUSD(r);
+                          return (
+                            <div key={i} style={styles.chartCol}>
+                              <div style={styles.chartBarWrap}>
+                                <div
+                                  style={{ ...styles.chartBar, height: usd !== null && usd !== undefined ? `${(usd / max) * 100}%` : '2px' }}
+                                  title={usd !== null && usd !== undefined ? `US$ ${usd.toLocaleString('es-AR', { maximumFractionDigits: 0 })}` : 'Sin datos'}
+                                />
+                              </div>
+                              <div style={styles.chartValue}>
+                                {usd !== null && usd !== undefined ? `$${Math.round(usd).toLocaleString('es-AR')}` : '—'}
+                              </div>
+                              <div style={styles.chartLabel}>{fmtDate(r.fecha_solicitud)}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
               <div style={styles.timeline}>
                 {selectedCodeRows.map((r, i) => {
                   const st = STATUS_STYLE[r.estado_reparacion] || { color: '#8B9199', bg: 'rgba(139,145,153,0.14)', dot: '#5A6068' };
@@ -674,8 +846,18 @@ export default function VistaCilindros({ vm }) {
                         </div>
                         <div style={styles.timelineGrid}>
                           <Field label="Proveedor" value={r.proveedor || '—'} />
-                          <Field label="OC definitiva" value={r.oc_definitiva || '—'} />
+                          <Field label="OC definitiva" value={r.oc_definitiva ? fmtOC(r.oc_definitiva) : '—'} />
                           <Field label="Precio total" value={fmtMoney(r.precio_total, r.moneda)} />
+                          <Field
+                            label="≈ USD (oficial)"
+                            value={
+                              r.moneda === 'USD'
+                                ? `US$ ${Number(r.precio_total).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
+                                : precioEnUSD(r) !== null
+                                ? `US$ ${precioEnUSD(r).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`
+                                : (r.precio_total ? 'Calculando...' : '—')
+                            }
+                          />
                           <Field label="Remito" value={r.remito_nro ? `${r.remito_nro} (${r.remito_estado})` : '—'} />
                           <Field label="Fecha remito" value={fmtDate(r.remito_fecha)} />
                           <Field label="Factura" value={r.factura_numero ? `${r.factura_numero} (${r.factura_estado})` : '—'} />

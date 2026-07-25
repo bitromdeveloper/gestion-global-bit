@@ -1,0 +1,18 @@
+/* Reset básico: sin esto, el navegador deja un margen por defecto en <body>
+   (normalmente 8px) que se ve como un marco blanco alrededor de toda la app,
+   porque el fondo de la página por defecto es blanco. */
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #1C1F22; /* mismo fondo oscuro que usa la app, para que no haya
+                            ningún flash blanco ni al cargar ni en los bordes */
+}
+
+#root {
+  min-height: 100vh;
+}

@@ -56,6 +56,14 @@ export function fmtHaceTiempo(s) {
 
 export const ANIOS_SIN_ACTIVIDAD_PARA_BAJA = 4;
 
+// La OC viene de un Excel donde era una columna numérica (ej: 378341.0).
+// Al guardarla como texto quedó con el ".0" pegado — esto lo limpia solo
+// para mostrar, sin tocar el dato real en la base.
+export function fmtOC(oc) {
+  if (oc === null || oc === undefined || oc === '') return oc;
+  return String(oc).replace(/\.0+$/, '');
+}
+
 export function esInactivo(fechaUltimaOc) {
   if (!fechaUltimaOc) return true; // nunca tuvo ninguna OC
   const dias = diasDesde(fechaUltimaOc);

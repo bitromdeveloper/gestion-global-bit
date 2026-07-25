@@ -2,25 +2,37 @@ import React, { useState } from 'react';
 import { useAuth } from '../components/AuthContext';
 import CilindrosApp from './CilindrosApp';
 import GasesApp from '../gases/GasesApp';
+import UsuariosTab from './UsuariosTab';
+import AuditoriaTab from './AuditoriaTab';
 
 // ============================================================================
-// PANEL SUPERADMIN (bitrom) — ahora sí ve ambos módulos completos.
+// PANEL SUPERADMIN (bitrom) — Cilindros, Gases, Usuarios y Auditoría.
 // ============================================================================
 export default function PanelSuperadmin() {
   const { user, logout } = useAuth();
   const [vista, setVista] = useState('cilindros');
+
+  const TABS = [
+    { id: 'cilindros', label: 'Cilindros' },
+    { id: 'gases', label: 'Gases' },
+    { id: 'usuarios', label: 'Usuarios' },
+    { id: 'auditoria', label: 'Auditoría' },
+  ];
 
   return (
     <div style={{ minHeight: '100vh', background: '#1C1F22' }}>
       <div style={s.topbar}>
         <div style={s.brand}>Panel Superadmin — {user?.nombre}</div>
         <div style={s.tabs}>
-          <button style={{ ...s.tab, ...(vista === 'cilindros' ? s.tabActive : {}) }} onClick={() => setVista('cilindros')}>
-            Cilindros
-          </button>
-          <button style={{ ...s.tab, ...(vista === 'gases' ? s.tabActive : {}) }} onClick={() => setVista('gases')}>
-            Gases
-          </button>
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              style={{ ...s.tab, ...(vista === t.id ? s.tabActive : {}) }}
+              onClick={() => setVista(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
         <button style={s.logout} onClick={logout}>Cerrar sesión</button>
       </div>
@@ -28,6 +40,8 @@ export default function PanelSuperadmin() {
       <div>
         {vista === 'cilindros' && <CilindrosApp />}
         {vista === 'gases' && <GasesApp />}
+        {vista === 'usuarios' && <UsuariosTab />}
+        {vista === 'auditoria' && <AuditoriaTab />}
       </div>
     </div>
   );
