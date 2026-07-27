@@ -1,1209 +1,308 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState } from 'react';
+import * as XLSX from 'xlsx';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../components/AuthContext';
-import styles from './styles';
-import { parseDate, esInactivo, diasDesde, ESTADO_OPERATIVO_STYLE, fmtOC } from './helpers';
-import { obtenerCotizacion, convertirAUSD } from './cotizaciones';
-import UnidadesTab from './UnidadesTab';
-import ImportarReporte from './ImportarReporte';
-import PendientesCatalogacion from './PendientesCatalogacion';
-import VistaCilindros from './VistaCilindros';
 
 // ============================================================================
-// Orquestador del módulo Cilindros: trae los datos de Supabase, calcula
-// todo lo derivado (grupos, filtros, estado actual, etc.) y arma un solo
-// objeto "vm" que le pasa a VistaCilindros. El header, las pestañas y el
-// modal de cambiar contraseña quedan acá porque son compartidos por las
-// dos pestañas (Cilindros / Unidades).
+// IMPORTAR REPORTE — sube el Excel de compras y actualiza cilindros.
+//
+// Por código (agrupando todas sus filas del reporte):
+//  1. Si tiene OC (en este reporte o ya en nuestra base) -> se procesa como
+//     reparación normal en cilindros.reparaciones (estado "En poder del
+//     proveedor" sale solo, como siempre).
+//  2. Si NO tiene OC en ningún lado -> se mira la fila MÁS RECIENTE de ese
+//     código en el reporte y su ESTADO_FINAL_RC:
+//       - Con OC Definitiva / Aprobada - OC eliminada / Pendiente /
+//         En Licitación  -> movimiento "en_proveedor"
+//       - Borrada / Devuelta / Rechazada / Aprobada -> movimiento "baja"
+//     (esto va a cilindros.movimientos, no a reparaciones, porque no hay
+//     ninguna OC real que registrar — solo un cambio de estado operativo)
+//
+// Si el código todavía no está en el catálogo, se da de alta solo, marcado
+// "pendiente_revision" para que un admin le asigne descripción después.
+//
+// No duplica movimientos: si el estado actual del código ya es el mismo que
+// se calcularía, no inserta nada — así se puede reimportar semana a semana
+// sin ensuciar el historial con filas repetidas.
 // ============================================================================
 
-export default function CilindrosApp() {
-  const { user, logout, changePassword } = useAuth();
-  const esAdmin = user?.rol === 'admin' || user?.rol === 'superadmin';
-  const puedeDarBaja = esAdmin || user?.rol === 'almacen';
-  const puedeRegistrarMovimiento = esAdmin || user?.rol === 'mantenimiento';
-  const puedeRegistrarReparacion = esAdmin || user?.rol === 'compras';
+const ESTADOS_ACTIVOS = ['Con OC Definitiva', 'Aprobada - OC eliminada', 'Pendiente', 'En Licitación'];
+const ESTADOS_BAJA = ['Borrada', 'Devuelta', 'Rechazada', 'Aprobada'];
 
-  const [menuUsuarioAbierto, setMenuUsuarioAbierto] = useState(false);
-  const [menuAdminAbierto, setMenuAdminAbierto] = useState(false);
-  const [mostrarCambiarPass, setMostrarCambiarPass] = useState(false);
-  const [passForm, setPassForm] = useState({ actual: '', nueva: '', confirmar: '' });
-  const [passMsg, setPassMsg] = useState({ type: '', text: '' });
-  const [guardandoPass, setGuardandoPass] = useState(false);
+function normalizar(s) {
+  return (s || '').toString().trim().toLowerCase();
+}
+function estaEnLista(valor, lista) {
+  const v = normalizar(valor);
+  return lista.some((x) => normalizar(x) === v);
+}
 
-  async function handleCambiarPassword(e) {
-    e.preventDefault();
-    setPassMsg({ type: '', text: '' });
-    if (passForm.nueva !== passForm.confirmar) { setPassMsg({ type: 'error', text: 'Las contraseñas no coinciden' }); return; }
-    if (passForm.nueva.length < 6) { setPassMsg({ type: 'error', text: 'Mínimo 6 caracteres' }); return; }
-    setGuardandoPass(true);
-    const result = await changePassword(passForm.actual, passForm.nueva);
-    setGuardandoPass(false);
-    if (result.error) setPassMsg({ type: 'error', text: result.error });
-    else {
-      setPassMsg({ type: 'success', text: '✓ Contraseña actualizada' });
-      setPassForm({ actual: '', nueva: '', confirmar: '' });
-    }
-  }
+function parseFechaDDMMYYYY(v) {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) return null;
+  const [, d, mo, y] = m;
+  const anio = y.length === 2 ? `20${y}` : y;
+  return `${anio}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
+}
 
-  const [catalogo, setCatalogo] = useState([]);
-  const [reparaciones, setReparaciones] = useState([]);
-  const [movimientos, setMovimientos] = useState([]);
-  const [unidades, setUnidades] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+function calcularEstadoReparacion(row) {
+  if (row.remito_estado === 'Verificado') return 'Reparado - Recibido en Almacén';
+  if (row.oc_definitiva) return 'En poder del proveedor (en reparación)';
+  return null;
+}
 
-  const [vistaPrincipal, setVistaPrincipal] = useState('cilindros'); // 'cilindros' | 'unidades'
-  const puedeGestionarUnidades = esAdmin || user?.rol === 'mantenimiento';
+export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, estadoActualPorCodigo, usuarioId, onImportado, onCerrar }) {
+  const [archivo, setArchivo] = useState(null);
+  const [procesando, setProcesando] = useState(false);
+  const [resultado, setResultado] = useState(null);
 
-  useEffect(() => {
-    cargarDatos();
-  }, []);
+  async function procesarArchivo() {
+    if (!archivo) return;
+    setProcesando(true);
+    setResultado(null);
 
-  async function fetchTodo(tabla) {
-    const PAGE = 1000;
-    let desde = 0;
-    let todo = [];
-    while (true) {
-      const { data, error } = await supabase
-        .schema('cilindros')
-        .from(tabla)
-        .select('*')
-        .range(desde, desde + PAGE - 1);
-      if (error) throw error;
-      todo = todo.concat(data || []);
-      if (!data || data.length < PAGE) break; // llegamos al final
-      desde += PAGE;
-    }
-    return todo;
-  }
-
-  async function cargarDatos() {
-    setLoading(true);
-    setError(null);
     try {
-      const [cat, rep, mov, uni] = await Promise.all([
-        fetchTodo('catalogo'),
-        fetchTodo('reparaciones'),
-        fetchTodo('movimientos'),
-        fetchTodo('unidades'),
-      ]);
-      setCatalogo(cat);
-      // Filtro de seguridad: una reparación sin OC definitiva no es una reparación
-      // real (quedó como solicitud que nunca se concretó). Ya se limpiaron de la
-      // base, pero esto evita que vuelvan a colarse si alguien carga una a mano.
-      setReparaciones((rep || []).filter((r) => !!r.oc_definitiva));
-      setMovimientos(mov || []);
-      setUnidades(uni || []);
-    } catch (e) {
-      console.error('Error cargando datos de cilindros:', e);
-      setError('No se pudieron cargar los datos. Reintentá en unos segundos.');
-    }
-    setLoading(false);
-  }
+      const buffer = await archivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array' });
+      const primeraHoja = wb.Sheets[wb.SheetNames[0]];
+      const filas = XLSX.utils.sheet_to_json(primeraHoja, { defval: null });
 
-  const data = useMemo(() => {
-    const repPorCodigo = {};
-    reparaciones.forEach((r) => {
-      if (!repPorCodigo[r.codigo]) repPorCodigo[r.codigo] = [];
-      repPorCodigo[r.codigo].push(r);
-    });
+      const total = filas.length;
 
-    return catalogo.flatMap((c) => {
-      const reps = repPorCodigo[c.codigo];
-      if (!reps || reps.length === 0) {
-        // Se guarda igual (para un futuro dashboard de "dados de alta y nunca
-        // usados"), pero se filtra antes de armar groups/equipos más abajo,
-        // así no aparece en la navegación normal.
-        return [{
-          codigo: c.codigo,
-          descripcion_original: c.descripcion_original,
-          descripcion_corta: c.descripcion_original,
-          equipo: c.equipo,
-          grupo_final: c.descripcion_unificada || 'SIN CLASIFICAR',
-          pendiente_revision: c.pendiente_revision,
-          fecha_solicitud: null,
-          proveedor: null,
-          oc_definitiva: null,
-          precio_total: null,
-          moneda: 'ARS',
-          remito_nro: null,
-          remito_estado: null,
-          remito_fecha: null,
-          factura_numero: null,
-          factura_estado: null,
-          estado_reparacion: 'SIN_REPARACIONES',
-        }];
-      }
-      return reps.map((r) => ({
-        codigo: c.codigo,
-        descripcion_original: c.descripcion_original,
-        descripcion_corta: c.descripcion_original,
-        equipo: c.equipo,
-        grupo_final: c.descripcion_unificada || 'SIN CLASIFICAR',
-        pendiente_revision: c.pendiente_revision,
-        fecha_solicitud: r.fecha_solicitud,
-        proveedor: r.proveedor,
-        oc_definitiva: r.oc_definitiva,
-        precio_total: r.precio_total,
-        moneda: r.moneda,
-        remito_nro: r.remito_nro,
-        remito_estado: r.remito_estado,
-        remito_fecha: r.remito_fecha,
-        factura_numero: r.factura_numero,
-        factura_estado: r.factura_estado,
-        estado_reparacion: r.estado_reparacion,
-      }));
-    });
-  }, [catalogo, reparaciones]);
-
-  const groups = useMemo(() => {
-    const map = {};
-    data.forEach((r) => {
-      if (r.estado_reparacion === 'SIN_REPARACIONES') return; // se guardan en "data" para uso futuro, pero no navegan
-      const key = r.grupo_final;
-      if (!map[key]) map[key] = { name: key, codes: new Set(), rows: [] };
-      map[key].codes.add(r.codigo);
-      map[key].rows.push(r);
-    });
-    return Object.values(map).map((g) => {
-      const fechas = g.rows.map((r) => r.fecha_solicitud).filter(Boolean).sort().reverse();
-      // Equipo de este grupo: el más común entre sus filas (normalmente es uno solo)
-      const conteoEquipo = {};
-      g.rows.forEach((r) => {
-        const eq = r.equipo || 'SIN IDENTIFICAR';
-        conteoEquipo[eq] = (conteoEquipo[eq] || 0) + 1;
+      // Filtro base: solo IUSA (no San Isidro) y código de cilindro (CIL...).
+      // OJO: acá NO se filtra por OC — necesitamos ver también las filas sin
+      // OC para poder clasificarlas por ESTADO_FINAL_RC.
+      const filtradas = filas.filter((f) => {
+        const planta = f.REQ_Planta_descripcion || f.Planta || '';
+        const codigo = (f.REQ_Material || '').toString().toUpperCase();
+        return planta.toString().toUpperCase() === 'IUSA' && codigo.startsWith('CIL');
       });
-      const equipo = Object.entries(conteoEquipo).sort((a, b) => b[1] - a[1])[0][0];
-      return { ...g, codeCount: g.codes.size, repairCount: g.rows.length, ultimaActividad: fechas[0] || null, equipo };
-    });
-  }, [data]);
 
-  // Nivel Equipo (nuevo): agrupa los "groups" de arriba (por descripción) según
-  // a qué equipo pertenecen. El sidebar ahora navega por acá primero.
-  const equipos = useMemo(() => {
-    const map = {};
-    groups.forEach((g) => {
-      if (!map[g.equipo]) map[g.equipo] = { name: g.equipo, codes: new Set(), grupos: [] };
-      g.codes.forEach((c) => map[g.equipo].codes.add(c));
-      map[g.equipo].grupos.push(g);
-    });
-    return Object.values(map)
-      .map((eq) => ({
-        ...eq,
-        codeCount: eq.codes.size,
-        grupos: [...eq.grupos].sort((a, b) => b.codeCount - a.codeCount),
-      }))
-      .sort((a, b) => b.codeCount - a.codeCount);
-  }, [groups]);
-
-  const [selectedEquipo, setSelectedEquipo] = useState(null);
-
-  const [ordenSidebar, setOrdenSidebar] = useState('cantidad'); // 'cantidad' | 'reciente'
-
-  const equiposOrdenados = useMemo(() => {
-    const conUltimaActividad = equipos.map((eq) => ({
-      ...eq,
-      ultimaActividad: eq.grupos.reduce((max, g) => (g.ultimaActividad && g.ultimaActividad > (max || '') ? g.ultimaActividad : max), null),
-    }));
-    const copia = [...conUltimaActividad];
-    if (ordenSidebar === 'reciente') {
-      copia.sort((a, b) => {
-        if (!a.ultimaActividad) return 1;
-        if (!b.ultimaActividad) return -1;
-        return b.ultimaActividad.localeCompare(a.ultimaActividad);
+      // Agrupar por código
+      const porCodigo = new Map();
+      filtradas.forEach((f) => {
+        const codigo = f.REQ_Material;
+        if (!codigo) return;
+        if (!porCodigo.has(codigo)) porCodigo.set(codigo, []);
+        porCodigo.get(codigo).push(f);
       });
-    } else {
-      copia.sort((a, b) => b.codeCount - a.codeCount);
-    }
-    return copia;
-  }, [equipos, ordenSidebar]);
 
-  const [query, setQuery] = useState('');
+      const codigosSet = new Set(catalogoCodigos);
+      const codigosNuevos = new Map(); // codigo -> descripcion cruda
+      const filasReparacionesAInsertar = [];
+      const movimientosAInsertar = []; // { codigo, estado, observaciones }
+      let sinClasificar = 0;
 
-  // ---- Buscador global (siempre visible, no depende de estar dentro de un grupo) ----
-  const [busquedaGlobal, setBusquedaGlobal] = useState('');
-  const [busquedaGlobalAbierta, setBusquedaGlobalAbierta] = useState(false);
-  const [selectedGroup, setSelectedGroup] = useState(null);
-  const [selectedCode, setSelectedCode] = useState(null);
-  const [codeQuery, setCodeQuery] = useState('');
-  const [fechaDesde, setFechaDesde] = useState('');
-  const [fechaHasta, setFechaHasta] = useState('');
-  const [ocultarInactivos, setOcultarInactivos] = useState(false);
-  const [filtroEstadoOperativo, setFiltroEstadoOperativo] = useState('todos'); // 'todos' | 'en_uso' | 'en_stock' | 'en_proveedor' | 'roto_en_almacen' | 'baja'
+      for (const [codigo, filasCodigo] of porCodigo) {
+        const tieneOcEnReporte = filasCodigo.some(
+          (f) => f.OC_definitiva !== null && f.OC_definitiva !== undefined && f.OC_definitiva !== ''
+        );
+        const tieneOc = tieneOcEnReporte || codigosConOcEnDB.has(codigo);
 
-  // Orden de la lista de descripciones dentro de un equipo (con dirección,
-  // para que el encabezado clickeable pueda alternar ▲/▼)
-  const DIRECCION_DEFAULT_DESC = { cantidad: 'desc', descripcion: 'asc' };
-  const [ordenDescripciones, setOrdenDescripciones] = useState('cantidad'); // 'cantidad' | 'descripcion'
-  const [ordenDescripcionesDir, setOrdenDescripcionesDir] = useState('desc'); // 'asc' | 'desc'
-
-  function ordenarDescripcionesPor(campo) {
-    if (campo === ordenDescripciones) {
-      setOrdenDescripcionesDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setOrdenDescripciones(campo);
-      setOrdenDescripcionesDir(DIRECCION_DEFAULT_DESC[campo] || 'asc');
-    }
-  }
-
-  // Orden de la lista de códigos dentro de una descripción
-  const DIRECCION_DEFAULT_CODIGOS = { fecha: 'desc', codigo: 'asc', descripcion: 'asc', proveedor: 'asc', monto: 'desc', oc: 'asc' };
-  const [ordenCodigos, setOrdenCodigos] = useState('fecha'); // 'fecha' | 'codigo' | 'descripcion' | 'proveedor' | 'monto' | 'oc'
-  const [ordenCodigosDir, setOrdenCodigosDir] = useState('desc'); // 'asc' | 'desc'
-
-  function ordenarCodigosPor(campo) {
-    if (campo === ordenCodigos) {
-      setOrdenCodigosDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setOrdenCodigos(campo);
-      setOrdenCodigosDir(DIRECCION_DEFAULT_CODIGOS[campo] || 'asc');
-    }
-  }
-
-  // Cuántos ítems mostrar antes de pedir "Mostrar más" (para no tirar todo junto)
-  const PAGINA = 20;
-  const [verDescripciones, setVerDescripciones] = useState(PAGINA);
-  const [verCodigos, setVerCodigos] = useState(PAGINA);
-
-  useEffect(() => { setVerDescripciones(PAGINA); }, [selectedEquipo]);
-  useEffect(() => { setVerCodigos(PAGINA); }, [selectedGroup]);
-
-  const filteredEquipos = useMemo(() => {
-    if (!query.trim()) return equiposOrdenados;
-    const q = query.trim().toUpperCase();
-    return equiposOrdenados.filter(
-      (eq) =>
-        eq.name.toUpperCase().includes(q) ||
-        eq.grupos.some((g) => g.name.toUpperCase().includes(q) || g.rows.some((r) => r.codigo.toUpperCase().includes(q)))
-    );
-  }, [equiposOrdenados, query]);
-
-  const activeEquipo = equiposOrdenados.find((eq) => eq.name === selectedEquipo) || null;
-  const activeGroup = groups.find((g) => g.name === selectedGroup) || null;
-
-  const descripcionesDelEquipoOrdenadas = useMemo(() => {
-    if (!activeEquipo) return [];
-    const copia = [...activeEquipo.grupos];
-    const dir = ordenDescripcionesDir === 'asc' ? 1 : -1;
-    if (ordenDescripciones === 'descripcion') {
-      copia.sort((a, b) => dir * a.name.localeCompare(b.name));
-    } else {
-      copia.sort((a, b) => dir * (a.codeCount - b.codeCount));
-    }
-    return copia;
-  }, [activeEquipo, ordenDescripciones, ordenDescripcionesDir]);
-
-  const codesInGroup = useMemo(() => {
-    if (!activeGroup) return [];
-    const byCode = {};
-    activeGroup.rows.forEach((r) => {
-      if (!byCode[r.codigo]) byCode[r.codigo] = [];
-      byCode[r.codigo].push(r);
-    });
-    return Object.entries(byCode)
-      .map(([codigo, rows]) => {
-        const sorted = [...rows].sort((a, b) => (parseDate(b.fecha_solicitud) || 0) - (parseDate(a.fecha_solicitud) || 0));
-        return { codigo, rows: sorted, last: sorted[0], count: rows.length };
-      })
-      .sort((a, b) => (parseDate(b.last.fecha_solicitud) || 0) - (parseDate(a.last.fecha_solicitud) || 0));
-  }, [activeGroup]);
-
-  const chartMensual = useMemo(() => {
-    if (!activeGroup) return [];
-    const meses = Array.from({ length: 6 }, (_, i) => {
-      const d = new Date();
-      d.setMonth(d.getMonth() - (5 - i));
-      return d.toISOString().slice(0, 7);
-    });
-    return meses.map((m) => ({
-      mes: m,
-      label: new Date(m + '-01').toLocaleDateString('es-AR', { month: 'short', year: '2-digit' }),
-      cantidad: activeGroup.rows.filter((r) => r.fecha_solicitud && r.fecha_solicitud.startsWith(m)).length,
-    }));
-  }, [activeGroup]);
-
-  const codesInGroupFiltradosBase = useMemo(() => {
-    let filtrados = codesInGroup;
-    if (codeQuery.trim()) {
-      const q = codeQuery.trim().toUpperCase();
-      filtrados = filtrados.filter((c) => c.codigo.toUpperCase().includes(q));
-    }
-    if (fechaDesde) {
-      filtrados = filtrados.filter((c) => c.last.fecha_solicitud && c.last.fecha_solicitud >= fechaDesde);
-    }
-    if (fechaHasta) {
-      filtrados = filtrados.filter((c) => c.last.fecha_solicitud && c.last.fecha_solicitud <= fechaHasta);
-    }
-    if (ocultarInactivos) {
-      filtrados = filtrados.filter((c) => !esInactivo(c.last.fecha_solicitud));
-    }
-    return filtrados;
-  }, [codesInGroup, codeQuery, fechaDesde, fechaHasta, ocultarInactivos]);
-
-  const cantidadInactivosEnGrupo = useMemo(
-    () => codesInGroup.filter((c) => esInactivo(c.last.fecha_solicitud)).length,
-    [codesInGroup]
-  );
-
-  const historialMovimientos = useMemo(() => {
-    if (!selectedCode) return [];
-    return movimientos
-      .filter((m) => m.codigo === selectedCode)
-      .sort((a, b) => b.id - a.id);
-  }, [selectedCode, movimientos]);
-
-  const selectedCodeRows = useMemo(() => {
-    if (!selectedCode) return [];
-    return data
-      .filter((r) => r.codigo === selectedCode)
-      .sort((a, b) => (parseDate(b.fecha_solicitud) || 0) - (parseDate(a.fecha_solicitud) || 0));
-  }, [selectedCode, data]);
-
-  // ---- Conversión a USD (cotización oficial histórica) ----
-  const [cotizacionesPorFecha, setCotizacionesPorFecha] = useState({}); // fecha -> {compra,venta} | null
-
-  useEffect(() => {
-    if (!selectedCode) return;
-    const fechas = [...new Set(selectedCodeRows.map((r) => r.fecha_solicitud).filter(Boolean))];
-    const faltantes = fechas.filter((f) => !(f in cotizacionesPorFecha));
-    if (faltantes.length === 0) return;
-
-    let cancelado = false;
-    (async () => {
-      for (const fecha of faltantes) {
-        const cot = await obtenerCotizacion(fecha);
-        if (cancelado) return;
-        setCotizacionesPorFecha((prev) => ({ ...prev, [fecha]: cot }));
-      }
-    })();
-    return () => { cancelado = true; };
-  }, [selectedCode, selectedCodeRows]);
-
-  function precioEnUSD(row) {
-    const cot = cotizacionesPorFecha[row.fecha_solicitud];
-    return convertirAUSD(row.precio_total, row.moneda, cot);
-  }
-
-  const gastoTotalUSD = useMemo(() => {
-    const valores = selectedCodeRows.map(precioEnUSD).filter((v) => v !== null);
-    if (valores.length === 0) return null;
-    return valores.reduce((a, b) => a + b, 0);
-  }, [selectedCodeRows, cotizacionesPorFecha]);
-
-  const estadoActualPorCodigo = useMemo(() => {
-    // Importante: se compara por "id" (orden real de creación en la base), no por
-    // "fecha" — la fecha se puede editar a mano al dar de baja (para poner una
-    // fecha pasada), así que no sirve para saber qué movimiento es el más reciente
-    // de verdad. El id (autoincremental) nunca miente sobre el orden real.
-    const map = {};
-    movimientos.forEach((m) => {
-      const actual = map[m.codigo];
-      if (!actual || m.id > actual.id) map[m.codigo] = m;
-    });
-    return map;
-  }, [movimientos]);
-
-  // ---- Edición de catalogación (solo admin) ----
-  const [editandoCatalogo, setEditandoCatalogo] = useState(false);
-  const [formCatalogo, setFormCatalogo] = useState({ descripcion_unificada: '', equipo: '' });
-  const [guardandoCatalogo, setGuardandoCatalogo] = useState(false);
-
-  // ---- Registrar movimiento (solo admin) ----
-  const [mostrarFormMovimiento, setMostrarFormMovimiento] = useState(false);
-  const [formMovimiento, setFormMovimiento] = useState({ estado: 'en_stock', proveedor: '', observaciones: '', unidad_id: '' });
-  const [guardandoMovimiento, setGuardandoMovimiento] = useState(false);
-
-  // ---- Dar de baja (admin + almacén) ----
-  const hoyISO = () => new Date().toISOString().slice(0, 10);
-  const [mostrarFormBaja, setMostrarFormBaja] = useState(false);
-
-  // ---- Registrar reparación nueva (rol compras + admin) ----
-  const FORM_REPARACION_INICIAL = {
-    fecha_solicitud: hoyISO(), oc_definitiva: '', proveedor: '',
-    precio_unitario: '', precio_total: '', moneda: 'ARS',
-  };
-  const [mostrarFormReparacion, setMostrarFormReparacion] = useState(false);
-  const [formReparacion, setFormReparacion] = useState(FORM_REPARACION_INICIAL);
-  const [guardandoReparacion, setGuardandoReparacion] = useState(false);
-  const [formBaja, setFormBaja] = useState({ fecha: hoyISO(), motivo: '' });
-  const [guardandoBaja, setGuardandoBaja] = useState(false);
-  const [cancelandoBaja, setCancelandoBaja] = useState(false);
-  const [mostrarHistorialMovimientos, setMostrarHistorialMovimientos] = useState(false);
-
-  async function guardarCatalogacion(codigo) {
-    setGuardandoCatalogo(true);
-    const { error } = await supabase
-      .schema('cilindros')
-      .from('catalogo')
-      .update({
-        descripcion_unificada: formCatalogo.descripcion_unificada,
-        equipo: formCatalogo.equipo,
-        actualizado_en: new Date().toISOString(),
-      })
-      .eq('codigo', codigo);
-    setGuardandoCatalogo(false);
-    if (error) {
-      alert('Error al guardar: ' + error.message);
-      return;
-    }
-    setEditandoCatalogo(false);
-    await cargarDatos();
-  }
-
-  async function registrarMovimiento(codigo) {
-    if (formMovimiento.estado === 'en_uso' && !formMovimiento.unidad_id) {
-      alert('Elegí a qué unidad se le asigna el cilindro.');
-      return;
-    }
-    setGuardandoMovimiento(true);
-    try {
-      const { data, error } = await supabase
-        .schema('cilindros')
-        .from('movimientos')
-        .insert({
-          codigo,
-          estado: formMovimiento.estado,
-          proveedor: formMovimiento.estado === 'en_proveedor' ? formMovimiento.proveedor : null,
-          unidad_id: formMovimiento.estado === 'en_uso' ? formMovimiento.unidad_id : null,
-          observaciones: formMovimiento.observaciones || null,
-          registrado_por: user?.id || null,
-        })
-        .select();
-
-      if (error) {
-        console.error('Error de Supabase al registrar movimiento:', error);
-        alert('Error al registrar el movimiento: ' + error.message);
-        return;
-      }
-      if (!data || data.length === 0) {
-        console.error('El insert del movimiento no devolvió filas — posible bloqueo de RLS.');
-        alert('No se pudo registrar el movimiento: el servidor no confirmó el cambio. Revisá la consola.');
-        return;
-      }
-      setMostrarFormMovimiento(false);
-      setFormMovimiento({ estado: 'en_stock', proveedor: '', observaciones: '', unidad_id: '' });
-      await cargarDatos();
-    } catch (e) {
-      console.error('Excepción al registrar movimiento:', e);
-      alert('Ocurrió un error inesperado. Mirá la consola para más detalle.');
-    } finally {
-      setGuardandoMovimiento(false);
-    }
-  }
-
-  async function registrarReparacion(codigo) {
-    if (!formReparacion.oc_definitiva.trim()) {
-      alert('La OC definitiva es obligatoria.');
-      return;
-    }
-    setGuardandoReparacion(true);
-    try {
-      const { data, error } = await supabase
-        .schema('cilindros')
-        .from('reparaciones')
-        .insert({
-          codigo,
-          fecha_solicitud: formReparacion.fecha_solicitud,
-          oc_definitiva: formReparacion.oc_definitiva,
-          proveedor: formReparacion.proveedor || null,
-          precio_unitario: formReparacion.precio_unitario ? Number(formReparacion.precio_unitario) : null,
-          precio_total: formReparacion.precio_total ? Number(formReparacion.precio_total) : null,
-          moneda: formReparacion.moneda || 'ARS',
-          // Recién se manda a reparar, todavía no volvió — remito/factura se
-          // completan solos cuando alguien registre el movimiento "En stock".
-          estado_reparacion: 'En poder del proveedor (en reparación)',
-          estado_final_rc: 'Con OC Definitiva',
-        })
-        .select();
-
-      if (error) {
-        console.error('Error de Supabase al registrar la reparación:', error);
-        alert('Error al registrar la reparación: ' + error.message);
-        return;
-      }
-      if (!data || data.length === 0) {
-        console.error('El insert de la reparación no devolvió filas — posible bloqueo de RLS.');
-        alert('No se pudo registrar la reparación: el servidor no confirmó el cambio. Revisá la consola.');
-        return;
-      }
-      setMostrarFormReparacion(false);
-      setFormReparacion(FORM_REPARACION_INICIAL);
-      await cargarDatos();
-    } catch (e) {
-      console.error('Excepción al registrar la reparación:', e);
-      alert('Ocurrió un error inesperado. Mirá la consola para más detalle.');
-    } finally {
-      setGuardandoReparacion(false);
-    }
-  }
-
-  async function darDeBaja(codigo) {
-    if (!formBaja.motivo.trim()) {
-      alert('Contá el motivo de la baja (rotura irreparable, etc.)');
-      return;
-    }
-    setGuardandoBaja(true);
-    try {
-      const { data, error } = await supabase
-        .schema('cilindros')
-        .from('movimientos')
-        .insert({
-          codigo,
-          estado: 'baja',
-          observaciones: formBaja.motivo,
-          fecha: new Date(formBaja.fecha + 'T12:00:00').toISOString(),
-          registrado_por: user?.id || null,
-        })
-        .select();
-
-      if (error) {
-        console.error('Error de Supabase al dar de baja:', error);
-        alert('Error al registrar la baja: ' + error.message);
-        return;
-      }
-      if (!data || data.length === 0) {
-        console.error('El insert de la baja no devolvió filas — posible bloqueo de RLS.');
-        alert('No se pudo registrar la baja: el servidor no confirmó el cambio. Revisá la consola.');
-        return;
-      }
-      console.log('Baja registrada correctamente:', data);
-      setMostrarFormBaja(false);
-      setFormBaja({ fecha: hoyISO(), motivo: '' });
-      await cargarDatos();
-    } catch (e) {
-      console.error('Excepción al dar de baja:', e);
-      alert('Ocurrió un error inesperado al registrar la baja. Mirá la consola para más detalle.');
-    } finally {
-      setGuardandoBaja(false);
-    }
-  }
-
-  async function cancelarBaja(codigo) {
-    if (!window.confirm('¿Cancelar la baja de este cilindro? Va a volver a figurar activo.')) return;
-    setCancelandoBaja(true);
-    try {
-      // Busca el estado anterior a la baja para restaurarlo (si no hay historial previo, vuelve a "en_stock")
-      // Se ordena por "id" (orden real de creación), no por "fecha", por la misma
-      // razón que en estadoActualPorCodigo: la fecha de la baja puede estar editada a mano.
-      const historialCodigo = movimientos
-        .filter((m) => m.codigo === codigo)
-        .sort((a, b) => b.id - a.id);
-      const estadoAnterior = historialCodigo.find((m) => m.estado !== 'baja')?.estado || 'en_stock';
-
-      const { data, error } = await supabase
-        .schema('cilindros')
-        .from('movimientos')
-        .insert({
-          codigo,
-          estado: estadoAnterior,
-          observaciones: 'Baja cancelada (corrección de error)',
-          registrado_por: user?.id || null,
-        })
-        .select();
-
-      if (error) {
-        console.error('Error de Supabase al cancelar la baja:', error);
-        alert('Error al cancelar la baja: ' + error.message);
-        return;
-      }
-      if (!data || data.length === 0) {
-        console.error('El insert no devolvió filas — probablemente una policy de RLS lo bloqueó silenciosamente.');
-        alert('No se pudo cancelar la baja: el servidor no confirmó el cambio (posible permiso insuficiente). Revisá la consola.');
-        return;
-      }
-      console.log('Baja cancelada correctamente:', data);
-      await cargarDatos();
-    } catch (e) {
-      console.error('Excepción al cancelar la baja:', e);
-      alert('Ocurrió un error inesperado al cancelar la baja. Mirá la consola para más detalle.');
-    } finally {
-      setCancelandoBaja(false);
-    }
-  }
-
-  // ---- Corregir un movimiento cargado mal (solo admin) ----
-  const [editandoMovimientoId, setEditandoMovimientoId] = useState(null);
-  const [formEditarMovimiento, setFormEditarMovimiento] = useState({ estado: '', proveedor: '', observaciones: '', fecha: '' });
-  const [guardandoEditarMovimiento, setGuardandoEditarMovimiento] = useState(false);
-
-  function abrirEditarMovimiento(m) {
-    setEditandoMovimientoId(m.id);
-    setFormEditarMovimiento({
-      estado: m.estado,
-      proveedor: m.proveedor || '',
-      observaciones: m.observaciones || '',
-      fecha: m.fecha ? m.fecha.slice(0, 10) : hoyISO(),
-    });
-  }
-
-  async function guardarEditarMovimiento() {
-    setGuardandoEditarMovimiento(true);
-    try {
-      const { data, error } = await supabase
-        .schema('cilindros')
-        .from('movimientos')
-        .update({
-          estado: formEditarMovimiento.estado,
-          proveedor: formEditarMovimiento.estado === 'en_proveedor' ? formEditarMovimiento.proveedor : null,
-          observaciones: formEditarMovimiento.observaciones || null,
-          fecha: new Date(formEditarMovimiento.fecha + 'T12:00:00').toISOString(),
-        })
-        .eq('id', editandoMovimientoId)
-        .select();
-
-      if (error) {
-        console.error('Error al corregir el movimiento:', error);
-        alert('Error al guardar la corrección: ' + error.message);
-        return;
-      }
-      if (!data || data.length === 0) {
-        console.error('El update no devolvió filas — posible bloqueo de RLS.');
-        alert('No se pudo guardar: el servidor no confirmó el cambio. Revisá la consola.');
-        return;
-      }
-      setEditandoMovimientoId(null);
-      await cargarDatos();
-    } catch (e) {
-      console.error('Excepción al corregir el movimiento:', e);
-      alert('Ocurrió un error inesperado. Mirá la consola para más detalle.');
-    } finally {
-      setGuardandoEditarMovimiento(false);
-    }
-  }
-
-  const unidadNombre = (unidadId) => {
-    if (!unidadId) return null;
-    const u = unidades.find((x) => String(x.id) === String(unidadId));
-    return u ? u.identificador : `Unidad #${unidadId}`;
-  };
-
-  // Última reparación (del historial de compras) por código, para poder
-  // combinarla con el estado operativo manual (movimientos).
-  const ultimaReparacionPorCodigo = useMemo(() => {
-    const map = {};
-    reparaciones.forEach((r) => {
-      const actual = map[r.codigo];
-      if (!actual || (r.fecha_solicitud || '') > (actual.fecha_solicitud || '')) map[r.codigo] = r;
-    });
-    return map;
-  }, [reparaciones]);
-
-  // ============================================================================
-  // ESTADO EFECTIVO: combina las dos fuentes de estado que hoy conviven:
-  //  - cilindros.movimientos (carga manual: en_uso/en_stock/en_proveedor/roto/baja)
-  //  - cilindros.reparaciones (viene del reporte de compras histórico: si la
-  //    última reparación no tiene remito, el cilindro sigue "en poder del
-  //    proveedor" aunque nadie haya cargado nunca un movimiento a mano)
-  // Gana la fuente con la fecha más reciente. Si nunca se cargó un
-  // movimiento, se usa lo que diga la última reparación.
-  // ============================================================================
-  const estadoEfectivoPorCodigo = useMemo(() => {
-    const map = {};
-    catalogo.forEach((c) => {
-      const mov = estadoActualPorCodigo[c.codigo];
-      const rep = ultimaReparacionPorCodigo[c.codigo];
-
-      const fechaMov = mov?.fecha ? new Date(mov.fecha) : null;
-      const fechaRep = rep?.fecha_solicitud ? new Date(rep.fecha_solicitud) : null;
-
-      if (fechaMov && (!fechaRep || fechaMov >= fechaRep)) {
-        map[c.codigo] = { estado: mov.estado, fecha: mov.fecha, proveedor: mov.proveedor, origen: 'movimiento' };
-      } else if (rep && rep.estado_reparacion === 'En poder del proveedor (en reparación)') {
-        map[c.codigo] = { estado: 'en_proveedor', fecha: rep.fecha_solicitud, proveedor: rep.proveedor, origen: 'reparacion' };
-      } else if (rep && rep.estado_reparacion === 'Reparado - Recibido en Almacén') {
-        map[c.codigo] = { estado: 'en_stock', fecha: rep.remito_fecha || rep.fecha_solicitud, proveedor: null, origen: 'reparacion' };
-      } else if (mov) {
-        map[c.codigo] = { estado: mov.estado, fecha: mov.fecha, proveedor: mov.proveedor, origen: 'movimiento' };
-      }
-    });
-    return map;
-  }, [catalogo, estadoActualPorCodigo, ultimaReparacionPorCodigo]);
-
-  const DIAS_ALERTA_ESTADO = 30;
-
-  // Todos los códigos actualmente "en poder del proveedor" o "roto en almacén",
-  // sin importar hace cuánto — la vista completa que se puede abrir desde el
-  // dashboard con un botón.
-  const cilindrosEnProveedorORoto = useMemo(() => {
-    return Object.entries(estadoEfectivoPorCodigo)
-      .filter(([, e]) => e.estado === 'en_proveedor' || e.estado === 'roto_en_almacen')
-      .map(([codigo, e]) => {
-        const dias = diasDesde(e.fecha);
-        const c = catalogo.find((x) => x.codigo === codigo);
-        return {
-          codigo,
-          estado: e.estado,
-          dias,
-          fecha: e.fecha,
-          descripcion_unificada: c?.descripcion_unificada || c?.descripcion_original || '',
-          proveedor: e.proveedor,
-          origen: e.origen,
+        const marcarComoNuevoSiHaceFalta = () => {
+          if (!codigosSet.has(codigo) && !codigosNuevos.has(codigo)) {
+            const descripcionCruda = filasCodigo[0].REQ_descripcion_corta || filasCodigo[0].REQ_descripcion_larga || codigo;
+            codigosNuevos.set(codigo, descripcionCruda);
+          }
         };
-      })
-      .sort((a, b) => (a.dias ?? Infinity) - (b.dias ?? Infinity));
-  }, [estadoEfectivoPorCodigo, catalogo]);
 
-  // Alertas = el subconjunto de la lista de arriba con 30+ días
-  const alertasOperativas = useMemo(
-    () => cilindrosEnProveedorORoto.filter((a) => a.dias !== null && a.dias >= DIAS_ALERTA_ESTADO),
-    [cilindrosEnProveedorORoto]
-  );
+        if (tieneOc) {
+          // Reparación normal: se cargan todas las filas de este código que
+          // efectivamente tengan OC (las que no tienen, se ignoran — ya
+          // sabemos que este código está en uso por las que sí tienen).
+          filasCodigo
+            .filter((f) => f.OC_definitiva !== null && f.OC_definitiva !== undefined && f.OC_definitiva !== '')
+            .forEach((f) => {
+              const row = {
+                codigo,
+                fecha_solicitud: parseFechaDDMMYYYY(f.REQ_fecha_creacion),
+                oc_definitiva: String(f.OC_definitiva),
+                proveedor: f.OC_proveedor || null,
+                precio_unitario: f.REQ_precio || null,
+                precio_total: f.REQ_Precio_total || null,
+                moneda: f.REQ_moneda || 'ARS',
+                remito_nro: f.REMITO_nro || null,
+                remito_estado: f.REMITO_estado || null,
+                remito_fecha: parseFechaDDMMYYYY(f.REMITO_fecha),
+                factura_numero: f.FACTURA_numero || null,
+                factura_estado: f.FACTURA_estado || null,
+                estado_final_rc: f.ESTADO_FINAL_RC || null,
+              };
+              row.estado_reparacion = calcularEstadoReparacion(row);
+              filasReparacionesAInsertar.push(row);
+            });
+          marcarComoNuevoSiHaceFalta();
+        } else {
+          // Sin OC en ningún lado: clasificar por la fila más reciente
+          const masReciente = [...filasCodigo].sort((a, b) => {
+            const da = parseFechaDDMMYYYY(a.REQ_fecha_creacion) || '';
+            const db = parseFechaDDMMYYYY(b.REQ_fecha_creacion) || '';
+            return db.localeCompare(da); // más reciente primero
+          })[0];
+          const estadoRC = masReciente.ESTADO_FINAL_RC;
 
-  // Vista "todos en poder del proveedor" que se abre con el botón del dashboard
-  const [mostrarTodosEnProveedor, setMostrarTodosEnProveedor] = useState(false);
-  const [mostrarImportar, setMostrarImportar] = useState(false);
-  const [mostrarPendientes, setMostrarPendientes] = useState(false);
+          let nuevoEstado = null;
+          let motivo = null;
+          if (estaEnLista(estadoRC, ESTADOS_ACTIVOS)) {
+            nuevoEstado = 'en_proveedor';
+            motivo = `RC: ${estadoRC} (automático desde importación)`;
+          } else if (estaEnLista(estadoRC, ESTADOS_BAJA)) {
+            nuevoEstado = 'baja';
+            motivo = `RC: ${estadoRC} (automático desde importación)`;
+          } else {
+            sinClasificar++;
+          }
 
-  // Filtro final por estado operativo (usa estadoEfectivoPorCodigo, que se
-  // calcula más arriba combinando movimientos + reparaciones histórico).
-  const codesInGroupFiltrados = useMemo(() => {
-    if (filtroEstadoOperativo === 'todos') return codesInGroupFiltradosBase;
-    return codesInGroupFiltradosBase.filter(
-      (c) => estadoEfectivoPorCodigo[c.codigo]?.estado === filtroEstadoOperativo
-    );
-  }, [codesInGroupFiltradosBase, filtroEstadoOperativo, estadoEfectivoPorCodigo]);
-
-  const codesInGroupOrdenados = useMemo(() => {
-    const copia = [...codesInGroupFiltrados];
-    const dir = ordenCodigosDir === 'asc' ? 1 : -1;
-    switch (ordenCodigos) {
-      case 'codigo':
-        copia.sort((a, b) => dir * a.codigo.localeCompare(b.codigo));
-        break;
-      case 'descripcion':
-        copia.sort((a, b) => dir * (a.last.descripcion_corta || '').localeCompare(b.last.descripcion_corta || ''));
-        break;
-      case 'proveedor':
-        copia.sort((a, b) => dir * (a.last.proveedor || '').localeCompare(b.last.proveedor || ''));
-        break;
-      case 'monto':
-        copia.sort((a, b) => dir * ((Number(a.last.precio_total) || 0) - (Number(b.last.precio_total) || 0)));
-        break;
-      case 'oc':
-        copia.sort((a, b) => dir * ((parseFloat(fmtOC(a.last.oc_definitiva)) || 0) - (parseFloat(fmtOC(b.last.oc_definitiva)) || 0)));
-        break;
-      default: // 'fecha'
-        copia.sort((a, b) => dir * ((parseDate(a.last.fecha_solicitud) || 0) - (parseDate(b.last.fecha_solicitud) || 0)));
-    }
-    return copia;
-  }, [codesInGroupFiltrados, ordenCodigos, ordenCodigosDir]);
-
-  const descripcionesVisibles = descripcionesDelEquipoOrdenadas.slice(0, verDescripciones);
-  const codigosVisibles = codesInGroupOrdenados.slice(0, verCodigos);
-
-  const cantidadPendientes = useMemo(
-    () => catalogo.filter((c) => c.pendiente_revision).length,
-    [catalogo]
-  );
-
-  const totals = useMemo(() => {
-    const codes = new Set(catalogo.map((c) => c.codigo));
-    const estados = Object.values(estadoEfectivoPorCodigo);
-    const enProveedor = estados.filter((e) => e.estado === 'en_proveedor').length;
-    const enAlmacen = estados.filter((e) => e.estado === 'en_stock').length;
-    return { codigos: codes.size, reparaciones: reparaciones.length, enProveedor, enAlmacen };
-  }, [catalogo, reparaciones, estadoEfectivoPorCodigo]);
-
-  function irACodigo(codigo) {
-    const grupo = groups.find((g) => g.codes.has(codigo));
-    if (grupo) {
-      setSelectedEquipo(grupo.equipo);
-      setSelectedGroup(grupo.name);
-    }
-    setSelectedCode(codigo);
-    setMostrarHistorialMovimientos(false);
-    setBusquedaGlobal('');
-    setBusquedaGlobalAbierta(false);
-    setVistaPrincipal('cilindros');
-  }
-
-  const resultadosBusquedaGlobal = useMemo(() => {
-    if (!busquedaGlobal.trim()) return [];
-    const q = busquedaGlobal.trim().toUpperCase();
-    return catalogo
-      .filter(
-        (c) =>
-          c.codigo.toUpperCase().includes(q) ||
-          (c.descripcion_unificada || '').toUpperCase().includes(q) ||
-          (c.descripcion_original || '').toUpperCase().includes(q)
-      )
-      .slice(0, 8);
-  }, [busquedaGlobal, catalogo]);
-
-  // ---- Notificaciones en vivo (Supabase Realtime) ----
-  const [notificaciones, setNotificaciones] = useState([]);
-
-  useEffect(() => {
-    const canal = supabase
-      .channel('cilindros-movimientos-realtime')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'cilindros', table: 'movimientos' },
-        (payload) => {
-          const m = payload.new;
-          // No te notifiques a vos mismo por algo que acabás de cargar
-          if (m.registrado_por === user?.id) return;
-          const c = catalogo.find((x) => x.codigo === m.codigo);
-          const es = ESTADO_OPERATIVO_STYLE[m.estado] || { label: m.estado, color: '#8B9199' };
-          const id = `${m.id}-${Date.now()}`;
-          const texto = `${m.codigo} — ${c?.descripcion_unificada || ''} pasó a "${es.label}"`;
-          setNotificaciones((prev) => [...prev, { id, texto, color: es.color }]);
-          setTimeout(() => {
-            setNotificaciones((prev) => prev.filter((n) => n.id !== id));
-          }, 7000);
+          if (nuevoEstado) {
+            // No duplicar: si el estado actual del código ya es este mismo, no insertar de nuevo
+            const estadoActual = estadoActualPorCodigo[codigo]?.estado;
+            if (estadoActual !== nuevoEstado) {
+              movimientosAInsertar.push({ codigo, estado: nuevoEstado, observaciones: motivo });
+            }
+            marcarComoNuevoSiHaceFalta();
+          }
         }
-      )
-      .subscribe();
+      }
 
-    return () => {
-      supabase.removeChannel(canal);
-    };
-    // eslint-disable-next-line
-  }, [catalogo, user?.id]);
+      // Dar de alta los códigos nuevos como "pendiente de revisión"
+      let catalogadosNuevos = 0;
+      let erroresCatalogacion = 0;
+      for (const [codigo, descripcion] of codigosNuevos) {
+        const { error } = await supabase
+          .schema('cilindros')
+          .from('catalogo')
+          .insert({
+            codigo,
+            descripcion_original: descripcion,
+            descripcion_unificada: null,
+            equipo: null,
+            pendiente_revision: true,
+            creado_por: usuarioId || null,
+          });
+        if (error) {
+          console.error(`No se pudo catalogar ${codigo}:`, error.message);
+          erroresCatalogacion++;
+        } else {
+          catalogadosNuevos++;
+        }
+      }
 
-  if (loading) {
-    return (
-      <div style={styles.centerScreen}>
-        <div style={styles.loadingText}>Cargando cilindros...</div>
-      </div>
-    );
+      const codigosSetFinal = new Set([...catalogoCodigos, ...codigosNuevos.keys()]);
+      const reparacionesFinales = filasReparacionesAInsertar.filter((r) => codigosSetFinal.has(r.codigo));
+      const movimientosFinales = movimientosAInsertar.filter((m) => codigosSetFinal.has(m.codigo));
+
+      // Upsert de reparaciones (en bloques)
+      const BLOQUE = 300;
+      let repInsertadas = 0;
+      for (let i = 0; i < reparacionesFinales.length; i += BLOQUE) {
+        const bloque = reparacionesFinales.slice(i, i + BLOQUE);
+        const { error } = await supabase
+          .schema('cilindros')
+          .from('reparaciones')
+          .upsert(bloque, { onConflict: 'codigo,oc_definitiva' });
+        if (error) throw error;
+        repInsertadas += bloque.length;
+      }
+
+      // Insert de movimientos automáticos (uno por vez, son pocos)
+      let movInsertados = 0;
+      for (const m of movimientosFinales) {
+        const { error } = await supabase
+          .schema('cilindros')
+          .from('movimientos')
+          .insert({ codigo: m.codigo, estado: m.estado, observaciones: m.observaciones, registrado_por: usuarioId || null });
+        if (error) {
+          console.error(`No se pudo registrar movimiento de ${m.codigo}:`, error.message);
+        } else {
+          movInsertados++;
+        }
+      }
+
+      setResultado({
+        total,
+        codigosDetectados: porCodigo.size,
+        catalogadosNuevos,
+        erroresCatalogacion,
+        repInsertadas,
+        movInsertados,
+        sinClasificar,
+      });
+      if (onImportado) await onImportado();
+    } catch (e) {
+      console.error('Error importando reporte:', e);
+      setResultado({ error: e.message });
+    } finally {
+      setProcesando(false);
+    }
   }
-
-  if (error) {
-    return (
-      <div style={styles.centerScreen}>
-        <div style={styles.loadingText}>{error}</div>
-        <button style={styles.retryBtn} onClick={cargarDatos}>Reintentar</button>
-      </div>
-    );
-  }
-
-  const vm = {
-    query, setQuery,
-    ordenSidebar, setOrdenSidebar,
-    filteredEquipos,
-    selectedEquipo, setSelectedEquipo,
-    activeEquipo,
-    selectedGroup, setSelectedGroup,
-    selectedCode, setSelectedCode,
-    codeQuery, setCodeQuery,
-    fechaDesde, setFechaDesde,
-    fechaHasta, setFechaHasta,
-    ocultarInactivos, setOcultarInactivos,
-    groups,
-    activeGroup,
-    codesInGroup,
-    codesInGroupOrdenados,
-    codigosVisibles,
-    ordenCodigos, ordenCodigosDir, ordenarCodigosPor,
-    verCodigos, setVerCodigos,
-    PAGINA,
-    descripcionesDelEquipoOrdenadas,
-    descripcionesVisibles,
-    ordenDescripciones, ordenDescripcionesDir, ordenarDescripcionesPor,
-    verDescripciones, setVerDescripciones,
-    cantidadInactivosEnGrupo,
-    chartMensual,
-    selectedCodeRows,
-    estadoActualPorCodigo,
-    historialMovimientos,
-    mostrarHistorialMovimientos, setMostrarHistorialMovimientos,
-    esAdmin, puedeDarBaja, puedeRegistrarMovimiento, puedeRegistrarReparacion,
-    catalogo,
-    editandoCatalogo, setEditandoCatalogo,
-    formCatalogo, setFormCatalogo,
-    guardandoCatalogo, guardarCatalogacion,
-    mostrarFormMovimiento, setMostrarFormMovimiento,
-    formMovimiento, setFormMovimiento,
-    guardandoMovimiento, registrarMovimiento,
-    unidades,
-    mostrarFormBaja, setMostrarFormBaja,
-    formBaja, setFormBaja,
-    guardandoBaja, darDeBaja,
-    cancelandoBaja, cancelarBaja,
-    unidadNombre,
-    mostrarFormReparacion, setMostrarFormReparacion,
-    formReparacion, setFormReparacion,
-    guardandoReparacion, registrarReparacion,
-    alertasOperativas,
-    irACodigo,
-    filtroEstadoOperativo, setFiltroEstadoOperativo,
-    editandoMovimientoId, abrirEditarMovimiento,
-    formEditarMovimiento, setFormEditarMovimiento,
-    guardandoEditarMovimiento, guardarEditarMovimiento,
-    setEditandoMovimientoId,
-    precioEnUSD,
-    gastoTotalUSD,
-  };
 
   return (
-    <div style={styles.app}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-        * { box-sizing: border-box; }
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-thumb { background: #3A4048; border-radius: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        .row-hover:hover { background: #262B30 !important; }
-        .card-hover:hover { background: #262A2E !important; }
-        .back-hover:hover { background: rgba(91,122,153,0.2) !important; }
-        button { font-family: inherit; }
-      `}</style>
+    <div style={s.overlay} onClick={onCerrar}>
+      <div style={s.card} onClick={(e) => e.stopPropagation()}>
+        <div style={s.titulo}>Importar reporte de compras</div>
+        <p style={s.texto}>
+          Subí el Excel del reporte. Se filtra automáticamente a solo IUSA y códigos de
+          cilindro (<strong>CIL...</strong>). Los códigos con OC se cargan como reparación;
+          los que no tienen OC se clasifican por su último <strong>ESTADO_FINAL_RC</strong>:
+          en poder del proveedor o dados de baja automáticamente. No duplica nada si volvés
+          a importar el mismo reporte más adelante.
+        </p>
 
-      <div style={styles.toastStack}>
-        {notificaciones.map((n) => (
-          <div key={n.id} style={{ ...styles.toast, borderLeftColor: n.color }}>
-            {n.texto}
-          </div>
-        ))}
-      </div>
+        <input
+          type="file"
+          accept=".xlsx,.xls"
+          onChange={(e) => setArchivo(e.target.files[0])}
+          style={s.fileInput}
+        />
 
-      <div style={styles.headerRow1}>
-        <div style={styles.headerBrand}>
-          <div style={styles.plateIcon}>⛭</div>
-          <div style={styles.title}>REGISTRO DE CILINDROS</div>
-        </div>
-
-        <div style={styles.headerTabs}>
-          <button
-            style={{ ...styles.tabBtn, ...(vistaPrincipal === 'cilindros' ? styles.tabBtnActive : {}) }}
-            onClick={() => setVistaPrincipal('cilindros')}
-          >
-            Cilindros
-          </button>
-          <button
-            style={{ ...styles.tabBtn, ...(vistaPrincipal === 'unidades' ? styles.tabBtnActive : {}) }}
-            onClick={() => setVistaPrincipal('unidades')}
-          >
-            Unidades {unidades.length > 0 ? `(${unidades.length})` : ''}
-          </button>
-        </div>
-
-        <div style={{ position: 'relative' }}>
-          <button style={styles.userChip} onClick={() => setMenuUsuarioAbierto((v) => !v)}>
-            <span style={styles.userAvatar}>{(user?.nombre || '?').charAt(0).toUpperCase()}</span>
-            <span style={styles.userChipText}>
-              <span style={styles.userChipName}>{user?.nombre}</span>
-              <span style={styles.userChipRol}>{user?.rol}</span>
-            </span>
-            <span style={{ color: '#5A6068', fontSize: 10 }}>▾</span>
-          </button>
-
-          {menuUsuarioAbierto && (
-            <div style={styles.userMenu}>
-              <button
-                style={styles.userMenuItem}
-                onClick={() => { setMostrarCambiarPass(true); setMenuUsuarioAbierto(false); }}
-              >
-                Cambiar contraseña
-              </button>
-              <button style={{ ...styles.userMenuItem, color: '#E8871E' }} onClick={logout}>
-                Cerrar sesión
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div style={styles.headerRow2}>
-        <div style={{ position: 'relative', flex: 1, maxWidth: 340 }}>
-          <input
-            placeholder="Buscar código o descripción..."
-            value={busquedaGlobal}
-            onChange={(e) => { setBusquedaGlobal(e.target.value); setBusquedaGlobalAbierta(true); }}
-            onFocus={() => setBusquedaGlobalAbierta(true)}
-            onBlur={() => setTimeout(() => setBusquedaGlobalAbierta(false), 150)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && resultadosBusquedaGlobal[0]) irACodigo(resultadosBusquedaGlobal[0].codigo); }}
-            style={styles.globalSearchInput}
-          />
-          {busquedaGlobalAbierta && busquedaGlobal.trim() && (
-            <div style={styles.globalSearchDropdown}>
-              {resultadosBusquedaGlobal.length === 0 ? (
-                <div style={styles.globalSearchEmpty}>Sin resultados</div>
-              ) : (
-                resultadosBusquedaGlobal.map((c) => (
-                  <div key={c.codigo} style={styles.globalSearchItem} className="row-hover" onClick={() => irACodigo(c.codigo)}>
-                    <span style={styles.globalSearchCodigo}>{c.codigo}</span>
-                    <span style={styles.globalSearchDesc}>{c.descripcion_unificada || c.descripcion_original}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-
-        <div style={styles.statsInline}>
-          <span>{totals.codigos} códigos</span>
-          <span style={styles.statsDivider}>·</span>
-          <span>{totals.reparaciones} reparaciones</span>
-          <span style={styles.statsDivider}>·</span>
-          <span style={{ color: '#C97369' }}>{totals.enProveedor} en proveedor</span>
-          <span style={styles.statsDivider}>·</span>
-          <span style={{ color: '#4FA98C' }}>{totals.enAlmacen} en almacén</span>
-        </div>
-
-        <div style={styles.headerActions}>
-          <button
-            style={{ ...styles.adminBtn, ...(mostrarTodosEnProveedor ? styles.filterToggleActive : {}) }}
-            onClick={() => setMostrarTodosEnProveedor((v) => !v)}
-          >
-            Ver en proveedor
-          </button>
-
-          {(esAdmin || puedeRegistrarReparacion) && (
-            <div style={{ position: 'relative' }}>
-              <button
-                style={{ ...styles.adminBtn, ...(cantidadPendientes > 0 ? styles.filterToggleActive : {}) }}
-                onClick={() => setMenuAdminAbierto((v) => !v)}
-              >
-                Admin {cantidadPendientes > 0 ? `(${cantidadPendientes})` : ''} ▾
-              </button>
-              {menuAdminAbierto && (
-                <div style={styles.userMenu}>
-                  {puedeRegistrarReparacion && (
-                    <button
-                      style={styles.userMenuItem}
-                      onClick={() => { setMostrarImportar(true); setMenuAdminAbierto(false); }}
-                    >
-                      Importar reporte
-                    </button>
-                  )}
-                  {esAdmin && (
-                    <button
-                      style={styles.userMenuItem}
-                      onClick={() => { setMostrarPendientes(true); setMenuAdminAbierto(false); }}
-                    >
-                      Pendientes de catalogar {cantidadPendientes > 0 ? `(${cantidadPendientes})` : ''}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          <button style={styles.refreshBtn} onClick={cargarDatos} title="Actualizar datos">↻</button>
-        </div>
-      </div>
-
-      {mostrarCambiarPass && (
-        <div style={styles.modalOverlay} onClick={() => setMostrarCambiarPass(false)}>
-          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.adminPanelTitle}>Cambiar contraseña</div>
-            {passMsg.text && (
-              <div style={{ ...styles.passMsg, color: passMsg.type === 'error' ? '#E8871E' : '#4FA98C' }}>
-                {passMsg.text}
+        {resultado && !resultado.error && (
+          <div style={s.resumen}>
+            <div>Filas en el archivo: <strong>{resultado.total}</strong></div>
+            <div>Códigos de cilindro detectados (IUSA): <strong>{resultado.codigosDetectados}</strong></div>
+            {resultado.catalogadosNuevos > 0 && (
+              <div style={{ color: '#E8871E' }}>
+                Códigos nuevos dados de alta (pendientes de revisión): <strong>{resultado.catalogadosNuevos}</strong>
               </div>
             )}
-            <form onSubmit={handleCambiarPassword}>
-              <div style={{ marginBottom: 10 }}>
-                <div style={styles.fieldLabel}>Contraseña actual</div>
-                <input
-                  style={styles.adminInput} type="password" required
-                  value={passForm.actual}
-                  onChange={(e) => setPassForm((f) => ({ ...f, actual: e.target.value }))}
-                />
-              </div>
-              <div style={{ marginBottom: 10 }}>
-                <div style={styles.fieldLabel}>Nueva contraseña</div>
-                <input
-                  style={styles.adminInput} type="password" required
-                  value={passForm.nueva}
-                  onChange={(e) => setPassForm((f) => ({ ...f, nueva: e.target.value }))}
-                />
-              </div>
-              <div style={{ marginBottom: 16 }}>
-                <div style={styles.fieldLabel}>Confirmar nueva</div>
-                <input
-                  style={styles.adminInput} type="password" required
-                  value={passForm.confirmar}
-                  onChange={(e) => setPassForm((f) => ({ ...f, confirmar: e.target.value }))}
-                />
-              </div>
-              <div style={styles.adminFormActions}>
-                <button type="button" style={styles.adminBtn} onClick={() => setMostrarCambiarPass(false)}>Cerrar</button>
-                <button type="submit" style={styles.adminBtnPrimary} disabled={guardandoPass}>
-                  {guardandoPass ? 'Guardando...' : 'Actualizar'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {mostrarTodosEnProveedor && (
-        <div style={styles.modalOverlay} onClick={() => setMostrarTodosEnProveedor(false)}>
-          <div style={{ ...styles.modalCard, width: 640, maxHeight: '75vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.adminPanelTitle}>
-              En poder del proveedor o roto — {cilindrosEnProveedorORoto.length}
-            </div>
-            {cilindrosEnProveedorORoto.length === 0 ? (
-              <div style={styles.alertasVacio}>No hay ningún cilindro en poder del proveedor ni roto en este momento.</div>
-            ) : (
-              <div style={styles.alertasList}>
-                {cilindrosEnProveedorORoto.map((a) => (
-                  <div
-                    key={a.codigo}
-                    style={styles.alertaRow}
-                    className="row-hover"
-                    onClick={() => { irACodigo(a.codigo); setMostrarTodosEnProveedor(false); }}
-                  >
-                    <span style={{
-                      ...styles.statusBadge,
-                      ...(a.estado === 'roto_en_almacen'
-                        ? { color: '#C0392B', background: 'rgba(192,57,43,0.16)' }
-                        : { color: '#E8871E', background: 'rgba(232,135,30,0.16)' }),
-                      minWidth: 150, textAlign: 'center',
-                    }}>
-                      {a.estado === 'roto_en_almacen' ? 'Roto — en almacén' : 'En poder del proveedor'}
-                    </span>
-                    <span style={styles.alertaCodigo}>{a.codigo}</span>
-                    <span style={styles.alertaDesc}>{a.descripcion_unificada}</span>
-                    {a.proveedor && <span style={styles.alertaProveedor}>{a.proveedor}</span>}
-                    <span style={styles.alertaDias}>{a.dias !== null ? `hace ${a.dias} días` : ''}</span>
-                  </div>
-                ))}
+            {resultado.erroresCatalogacion > 0 && (
+              <div style={{ color: '#C0392B' }}>
+                Códigos nuevos que no se pudieron catalogar (sin permiso): <strong>{resultado.erroresCatalogacion}</strong>
               </div>
             )}
-            <div style={{ ...styles.adminFormActions, marginTop: 16 }}>
-              <button style={styles.adminBtn} onClick={() => setMostrarTodosEnProveedor(false)}>Cerrar</button>
-            </div>
+            <div style={{ color: '#4FA98C' }}>Reparaciones cargadas / actualizadas: <strong>{resultado.repInsertadas}</strong></div>
+            <div style={{ color: '#5B7A99' }}>Movimientos automáticos registrados (en proveedor / baja): <strong>{resultado.movInsertados}</strong></div>
+            {resultado.sinClasificar > 0 && (
+              <div style={{ color: '#E8871E' }}>
+                Códigos sin OC con un ESTADO_FINAL_RC no reconocido: <strong>{resultado.sinClasificar}</strong> (revisar a mano)
+              </div>
+            )}
           </div>
+        )}
+        {resultado && resultado.error && (
+          <div style={{ ...s.resumen, color: '#E8871E' }}>Error: {resultado.error}</div>
+        )}
+
+        <div style={s.acciones}>
+          <button style={s.btnSecundario} onClick={onCerrar}>Cerrar</button>
+          <button style={s.btnPrimario} disabled={!archivo || procesando} onClick={procesarArchivo}>
+            {procesando ? 'Procesando...' : 'Importar'}
+          </button>
         </div>
-      )}
-
-      {mostrarImportar && (
-        <ImportarReporte
-          catalogoCodigos={catalogo.map((c) => c.codigo)}
-          usuarioId={user?.id}
-          onImportado={cargarDatos}
-          onCerrar={() => setMostrarImportar(false)}
-        />
-      )}
-
-      {mostrarPendientes && (
-        <PendientesCatalogacion
-          usuarioId={user?.id}
-          onActualizado={cargarDatos}
-          onCerrar={() => setMostrarPendientes(false)}
-        />
-      )}
-
-      {vistaPrincipal === 'cilindros' && (
-        <VistaCilindros vm={vm} />
-      )}
-
-      {vistaPrincipal === 'unidades' && (
-        <UnidadesTab
-          unidades={unidades}
-          puedeGestionar={puedeGestionarUnidades}
-          onRefresh={cargarDatos}
-        />
-      )}
-
-      <div style={styles.footer}>
-        Dato de estado: inferido a partir de OC / Remito / Factura del reporte de compras (no refleja ubicación física en tiempo real).
       </div>
     </div>
   );
 }
+
+const s = {
+  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 },
+  card: { background: '#24282C', border: '1px solid #3A4048', borderRadius: 10, padding: 24, width: 500, fontFamily: "'Oswald', sans-serif", color: '#E8E6E1' },
+  titulo: { fontSize: 15, fontWeight: 600, marginBottom: 10 },
+  texto: { fontSize: 12, color: '#8B9199', lineHeight: 1.5, marginBottom: 16 },
+  fileInput: { fontSize: 12, color: '#D8D6D1', marginBottom: 16, width: '100%' },
+  resumen: { fontSize: 12.5, background: '#1C1F22', border: '1px solid #2E3338', borderRadius: 8, padding: 12, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 4 },
+  acciones: { display: 'flex', justifyContent: 'flex-end', gap: 8 },
+  btnSecundario: { background: '#1C1F22', border: '1px solid #3A4048', color: '#D8D6D1', borderRadius: 6, padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' },
+  btnPrimario: { background: '#5B7A99', border: '1px solid #5B7A99', color: '#fff', borderRadius: 6, padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500 },
+};
