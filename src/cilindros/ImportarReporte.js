@@ -190,7 +190,24 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
       }
 
       const codigosSetFinal = new Set([...catalogoCodigos, ...codigosNuevos.keys()]);
-      const reparacionesFinales = filasReparacionesAInsertar.filter((r) => codigosSetFinal.has(r.codigo));
+      let reparacionesFinales = filasReparacionesAInsertar.filter((r) => codigosSetFinal.has(r.codigo));
+
+      // Deduplicar por (código, OC): si el reporte trae la misma OC repetida
+      // más de una vez (reenvío, corrección, etc.), Postgres rechaza el
+      // upsert entero si dos filas del mismo lote apuntan al mismo conflicto.
+      // Nos quedamos con la más "completa" (la que tiene remito verificado,
+      // si alguna la tiene; si no, la última del archivo).
+      const dedupMap = new Map();
+      for (const row of reparacionesFinales) {
+        const key = `${row.codigo}||${row.oc_definitiva}`;
+        const existente = dedupMap.get(key);
+        if (!existente || row.remito_estado === 'Verificado') {
+          dedupMap.set(key, row);
+        }
+      }
+      const duplicadosDetectados = reparacionesFinales.length - dedupMap.size;
+      reparacionesFinales = [...dedupMap.values()];
+
       const movimientosFinales = movimientosAInsertar.filter((m) => codigosSetFinal.has(m.codigo));
 
       // Upsert de reparaciones (en bloques)
@@ -225,6 +242,7 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
         codigosDetectados: porCodigo.size,
         catalogadosNuevos,
         erroresCatalogacion,
+        duplicadosDetectados,
         repInsertadas,
         movInsertados,
         sinClasificar,
@@ -269,6 +287,11 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
             {resultado.erroresCatalogacion > 0 && (
               <div style={{ color: '#C0392B' }}>
                 Códigos nuevos que no se pudieron catalogar (sin permiso): <strong>{resultado.erroresCatalogacion}</strong>
+              </div>
+            )}
+            {resultado.duplicadosDetectados > 0 && (
+              <div style={{ color: '#8B9199' }}>
+                Filas duplicadas (mismo código + OC repetido en el archivo): <strong>{resultado.duplicadosDetectados}</strong>
               </div>
             )}
             <div style={{ color: '#4FA98C' }}>Reparaciones cargadas / actualizadas: <strong>{resultado.repInsertadas}</strong></div>
