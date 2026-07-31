@@ -21,11 +21,46 @@ export default function DashboardGastos({ reparaciones, catalogo, estadoEfectivo
   const [cargando, setCargando] = useState(true);
   const [soloActivos, setSoloActivos] = useState(false);
 
+  // ---- Filtros del dashboard (afectan a las 4 vistas a la vez) ----
+  const [filtroDesde, setFiltroDesde] = useState('');
+  const [filtroHasta, setFiltroHasta] = useState('');
+  const [filtroEquipo, setFiltroEquipo] = useState('todos');
+  const [filtroProveedor, setFiltroProveedor] = useState('todos');
+
   const catalogoPorCodigo = useMemo(() => {
     const map = {};
     catalogo.forEach((c) => { map[c.codigo] = c; });
     return map;
   }, [catalogo]);
+
+  const equiposDisponibles = useMemo(
+    () => [...new Set(catalogo.map((c) => c.equipo).filter(Boolean))].sort(),
+    [catalogo]
+  );
+  const proveedoresDisponibles = useMemo(
+    () => [...new Set(reparaciones.map((r) => r.proveedor).filter(Boolean))].sort(),
+    [reparaciones]
+  );
+
+  // Reparaciones que entran en los cálculos, ya con los filtros aplicados
+  const reparacionesFiltradas = useMemo(() => {
+    return reparaciones.filter((r) => {
+      if (filtroDesde && (!r.fecha_solicitud || r.fecha_solicitud < filtroDesde)) return false;
+      if (filtroHasta && (!r.fecha_solicitud || r.fecha_solicitud > filtroHasta)) return false;
+      if (filtroEquipo !== 'todos' && catalogoPorCodigo[r.codigo]?.equipo !== filtroEquipo) return false;
+      if (filtroProveedor !== 'todos' && r.proveedor !== filtroProveedor) return false;
+      return true;
+    });
+  }, [reparaciones, filtroDesde, filtroHasta, filtroEquipo, filtroProveedor, catalogoPorCodigo]);
+
+  const hayFiltrosActivos = filtroDesde || filtroHasta || filtroEquipo !== 'todos' || filtroProveedor !== 'todos';
+
+  function limpiarFiltros() {
+    setFiltroDesde('');
+    setFiltroHasta('');
+    setFiltroEquipo('todos');
+    setFiltroProveedor('todos');
+  }
 
   // Trae la cotización de cada fecha distinta que aparece en las reparaciones.
   // La primera vez puede tardar unos segundos (una request por fecha nueva);
@@ -48,11 +83,11 @@ export default function DashboardGastos({ reparaciones, catalogo, estadoEfectivo
   }, [reparaciones]);
 
   const reparacionesConUSD = useMemo(() => {
-    return reparaciones.map((r) => ({
+    return reparacionesFiltradas.map((r) => ({
       ...r,
       usd: convertirAUSD(r.precio_total, r.moneda, cotizacionesPorFecha[r.fecha_solicitud]),
     }));
-  }, [reparaciones, cotizacionesPorFecha]);
+  }, [reparacionesFiltradas, cotizacionesPorFecha]);
 
   const progreso = useMemo(() => {
     const fechas = new Set(reparaciones.map((r) => r.fecha_solicitud).filter(Boolean));
@@ -137,6 +172,35 @@ export default function DashboardGastos({ reparaciones, catalogo, estadoEfectivo
 
   return (
     <div style={s.wrap}>
+      <div style={s.filtrosBar}>
+        <div style={s.filtroItem}>
+          <span style={s.filtroLabel}>Desde</span>
+          <input type="date" value={filtroDesde} onChange={(e) => setFiltroDesde(e.target.value)} style={s.filtroInput} />
+        </div>
+        <div style={s.filtroItem}>
+          <span style={s.filtroLabel}>Hasta</span>
+          <input type="date" value={filtroHasta} onChange={(e) => setFiltroHasta(e.target.value)} style={s.filtroInput} />
+        </div>
+        <div style={s.filtroItem}>
+          <span style={s.filtroLabel}>Equipo</span>
+          <select value={filtroEquipo} onChange={(e) => setFiltroEquipo(e.target.value)} style={s.filtroInput}>
+            <option value="todos">Todos</option>
+            {equiposDisponibles.map((eq) => <option key={eq} value={eq}>{eq}</option>)}
+          </select>
+        </div>
+        <div style={s.filtroItem}>
+          <span style={s.filtroLabel}>Proveedor</span>
+          <select value={filtroProveedor} onChange={(e) => setFiltroProveedor(e.target.value)} style={s.filtroInput}>
+            <option value="todos">Todos</option>
+            {proveedoresDisponibles.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        {hayFiltrosActivos && (
+          <button style={s.limpiarBtn} onClick={limpiarFiltros}>Limpiar filtros</button>
+        )}
+        <span style={s.filtroCount}>{reparacionesFiltradas.length} de {reparaciones.length} reparaciones</span>
+      </div>
+
       {cargando && (
         <div style={s.avisoCargando}>
           Calculando cotizaciones históricas... {progreso.resueltas} de {progreso.total} fechas
@@ -231,6 +295,21 @@ export default function DashboardGastos({ reparaciones, catalogo, estadoEfectivo
 
 const s = {
   wrap: { padding: '24px 32px', fontFamily: "'Oswald', sans-serif", color: '#E8E6E1' },
+  filtrosBar: {
+    display: 'flex', alignItems: 'flex-end', gap: 14, marginBottom: 18, flexWrap: 'wrap',
+    padding: '12px 16px', background: '#212427', border: '1px solid #2A2E32', borderRadius: 8,
+  },
+  filtroItem: { display: 'flex', flexDirection: 'column', gap: 4 },
+  filtroLabel: { fontSize: 10, color: '#5A6068', textTransform: 'uppercase', letterSpacing: '0.03em' },
+  filtroInput: {
+    padding: '6px 9px', background: '#1C1F22', border: '1px solid #3A4048', borderRadius: 5,
+    color: '#E8E6E1', fontSize: 12, fontFamily: "'Oswald', sans-serif", minWidth: 130,
+  },
+  limpiarBtn: {
+    background: 'transparent', border: '1px solid #3A4048', color: '#8B9199', borderRadius: 5,
+    padding: '6px 12px', fontSize: 11.5, cursor: 'pointer', fontFamily: "'Oswald', sans-serif", alignSelf: 'flex-end',
+  },
+  filtroCount: { fontSize: 11, color: '#5A6068', marginLeft: 'auto', alignSelf: 'center' },
   avisoCargando: {
     fontSize: 12, color: '#5B7A99', background: 'rgba(91,122,153,0.1)', border: '1px solid rgba(91,122,153,0.3)',
     borderRadius: 8, padding: '10px 14px', marginBottom: 20,
