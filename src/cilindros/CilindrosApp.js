@@ -7,6 +7,7 @@ import { obtenerCotizacion, convertirAUSD } from './cotizaciones';
 import UnidadesTab from './UnidadesTab';
 import ImportarReporte from './ImportarReporte';
 import PendientesCatalogacion from './PendientesCatalogacion';
+import DashboardGastos from './DashboardGastos';
 import VistaCilindros from './VistaCilindros';
 
 // ============================================================================
@@ -978,6 +979,12 @@ export default function CilindrosApp() {
           >
             Unidades {unidades.length > 0 ? `(${unidades.length})` : ''}
           </button>
+          <button
+            style={{ ...styles.tabBtn, ...(vistaPrincipal === 'gastos' ? styles.tabBtnActive : {}) }}
+            onClick={() => setVistaPrincipal('gastos')}
+          >
+            Gastos
+          </button>
         </div>
 
         <div style={{ position: 'relative' }}>
@@ -1175,6 +1182,9 @@ export default function CilindrosApp() {
       {mostrarImportar && (
         <ImportarReporte
           catalogoCodigos={catalogo.map((c) => c.codigo)}
+          catalogo={catalogo}
+          codigosConOcEnDB={new Set(reparaciones.map((r) => r.codigo))}
+          estadoActualPorCodigo={estadoEfectivoPorCodigo}
           usuarioId={user?.id}
           onImportado={cargarDatos}
           onCerrar={() => setMostrarImportar(false)}
@@ -1198,6 +1208,14 @@ export default function CilindrosApp() {
           unidades={unidades}
           puedeGestionar={puedeGestionarUnidades}
           onRefresh={cargarDatos}
+        />
+      )}
+
+      {vistaPrincipal === 'gastos' && (
+        <DashboardGastos
+          reparaciones={reparaciones}
+          catalogo={catalogo}
+          estadoEfectivoPorCodigo={estadoEfectivoPorCodigo}
         />
       )}
 
