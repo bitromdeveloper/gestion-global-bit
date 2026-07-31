@@ -326,16 +326,30 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
       // de reparaciones que ya existían en la base (esas NO se marcan con
       // esta importación, para que "deshacer" nunca borre historial real
       // que ya estaba antes de este archivo).
+      //
+      // OJO: esta consulta puede traer miles de filas (todo el histórico de
+      // los códigos implicados), y Supabase corta en 1000 filas por default
+      // — por eso va paginada con .range(), y además los códigos se piden
+      // en tandas para no armar una URL gigante.
       const codigosImplicados = [...new Set(reparacionesFinales.map((r) => r.codigo))];
       const existentesSet = new Set();
-      if (codigosImplicados.length > 0) {
-        const { data: existentes, error: errorExistentes } = await supabase
-          .schema('cilindros')
-          .from('reparaciones')
-          .select('codigo, oc_definitiva')
-          .in('codigo', codigosImplicados);
-        if (errorExistentes) throw errorExistentes;
-        (existentes || []).forEach((e) => existentesSet.add(`${e.codigo}||${e.oc_definitiva}`));
+      const TANDA_CODIGOS = 150;
+      const PAGINA = 1000;
+      for (let i = 0; i < codigosImplicados.length; i += TANDA_CODIGOS) {
+        const grupoCodigos = codigosImplicados.slice(i, i + TANDA_CODIGOS);
+        let desde = 0;
+        while (true) {
+          const { data: existentes, error: errorExistentes } = await supabase
+            .schema('cilindros')
+            .from('reparaciones')
+            .select('codigo, oc_definitiva')
+            .in('codigo', grupoCodigos)
+            .range(desde, desde + PAGINA - 1);
+          if (errorExistentes) throw errorExistentes;
+          (existentes || []).forEach((e) => existentesSet.add(`${e.codigo}||${e.oc_definitiva}`));
+          if (!existentes || existentes.length < PAGINA) break;
+          desde += PAGINA;
+        }
       }
 
       const reparacionesNuevas = [];
@@ -349,13 +363,28 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
         }
       });
 
-      // Insertar las altas nuevas (marcadas, deshacer-seguras)
+      // Insertar las altas nuevas (marcadas, deshacer-seguras). Si por algún
+      // caso borde (ej. dos personas importando al mismo tiempo) igual
+      // aparece un duplicado, cae a upsert en vez de cortar toda la
+      // importación — esa fila puntual pierde el importacion_id (no se
+      // podría deshacer sola), pero el resto sigue andando.
       const BLOQUE = 300;
       let repInsertadas = 0;
       for (let i = 0; i < reparacionesNuevas.length; i += BLOQUE) {
         const bloque = reparacionesNuevas.slice(i, i + BLOQUE);
         const { error } = await supabase.schema('cilindros').from('reparaciones').insert(bloque);
-        if (error) throw error;
+        if (error) {
+          if (error.code === '23505') {
+            console.warn('Duplicado inesperado en el bloque, reintentando como upsert:', error.message);
+            const { error: errorUpsert } = await supabase
+              .schema('cilindros')
+              .from('reparaciones')
+              .upsert(bloque, { onConflict: 'codigo,oc_definitiva' });
+            if (errorUpsert) throw errorUpsert;
+          } else {
+            throw error;
+          }
+        }
         repInsertadas += bloque.length;
       }
 
