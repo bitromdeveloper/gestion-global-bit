@@ -1186,6 +1186,7 @@ export default function CilindrosApp() {
           codigosConOcEnDB={new Set(reparaciones.map((r) => r.codigo))}
           estadoActualPorCodigo={estadoEfectivoPorCodigo}
           usuarioId={user?.id}
+          esAdmin={esAdmin}
           onImportado={cargarDatos}
           onCerrar={() => setMostrarImportar(false)}
         />
