@@ -1182,10 +1182,7 @@ export default function CilindrosApp() {
       {mostrarImportar && (
         <ImportarReporte
           catalogoCodigos={catalogo.map((c) => c.codigo)}
-<<<<<<< HEAD
           catalogo={catalogo}
-=======
->>>>>>> 7ed0f016edd8eb262836b9e80852b04c1c249d53
           codigosConOcEnDB={new Set(reparaciones.map((r) => r.codigo))}
           estadoActualPorCodigo={estadoEfectivoPorCodigo}
           usuarioId={user?.id}

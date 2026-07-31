@@ -53,7 +53,6 @@ function calcularEstadoReparacion(row) {
   return null;
 }
 
-<<<<<<< HEAD
 // Saca la letra/letras finales del código (N, V, R, NR, NV, etc.) para
 // comparar cilindros que son el mismo físicamente pero con distinto tipo
 // de reparación según el acuerdo marco. "CIL000-03-479N" y "CIL000-03-479V"
@@ -63,9 +62,6 @@ function codigoBase(codigo) {
 }
 
 export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConOcEnDB, estadoActualPorCodigo, usuarioId, onImportado, onCerrar }) {
-=======
-export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, estadoActualPorCodigo, usuarioId, onImportado, onCerrar }) {
->>>>>>> 7ed0f016edd8eb262836b9e80852b04c1c249d53
   const [archivo, setArchivo] = useState(null);
   const [procesando, setProcesando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -83,6 +79,15 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
 
       const total = filas.length;
 
+      // Registro de esta importación — todo lo que se agregue de acá en
+      // adelante queda marcado con este id, para poder deshacerla después.
+      const importacionId = crypto.randomUUID();
+      const { error: errorImportacion } = await supabase
+        .schema('cilindros')
+        .from('importaciones')
+        .insert({ id: importacionId, usuario_id: usuarioId || null, archivo_nombre: archivo.name });
+      if (errorImportacion) throw errorImportacion;
+
       // Filtro base: solo IUSA (no San Isidro) y código de cilindro (CIL...).
       // OJO: acá NO se filtra por OC — necesitamos ver también las filas sin
       // OC para poder clasificarlas por ESTADO_FINAL_RC.
@@ -99,7 +104,6 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
         if (!codigo) return;
         if (!porCodigo.has(codigo)) porCodigo.set(codigo, []);
         porCodigo.get(codigo).push(f);
-<<<<<<< HEAD
       });
 
       // Mapa: código base (sin la letra final) -> descripción/equipo ya
@@ -115,12 +119,6 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
       const codigosSet = new Set(catalogoCodigos);
       const codigosNuevosPendientes = new Map(); // codigo -> descripcion cruda (de verdad nuevos, sin match de base)
       const codigosNuevosResueltos = new Map(); // codigo -> { descripcion_unificada, equipo } (variante reconocida)
-=======
-      });
-
-      const codigosSet = new Set(catalogoCodigos);
-      const codigosNuevos = new Map(); // codigo -> descripcion cruda
->>>>>>> 7ed0f016edd8eb262836b9e80852b04c1c249d53
       const filasReparacionesAInsertar = [];
       const movimientosAInsertar = []; // { codigo, estado, observaciones }
       let sinClasificar = 0;
@@ -132,7 +130,6 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
         const tieneOc = tieneOcEnReporte || codigosConOcEnDB.has(codigo);
 
         const marcarComoNuevoSiHaceFalta = () => {
-<<<<<<< HEAD
           if (codigosSet.has(codigo) || codigosNuevosPendientes.has(codigo) || codigosNuevosResueltos.has(codigo)) return;
           const match = baseACatalogado.get(codigoBase(codigo));
           if (match) {
@@ -143,11 +140,6 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
           } else {
             const descripcionCruda = filasCodigo[0].REQ_descripcion_corta || filasCodigo[0].REQ_descripcion_larga || codigo;
             codigosNuevosPendientes.set(codigo, descripcionCruda);
-=======
-          if (!codigosSet.has(codigo) && !codigosNuevos.has(codigo)) {
-            const descripcionCruda = filasCodigo[0].REQ_descripcion_corta || filasCodigo[0].REQ_descripcion_larga || codigo;
-            codigosNuevos.set(codigo, descripcionCruda);
->>>>>>> 7ed0f016edd8eb262836b9e80852b04c1c249d53
           }
         };
 
@@ -209,13 +201,9 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
         }
       }
 
-<<<<<<< HEAD
       // Dar de alta los códigos nuevos: los que no matchearon ninguna base
       // quedan "pendiente_revision"; los que sí son variante de reparación
       // de algo ya catalogado, se dan de alta ya resueltos.
-=======
-      // Dar de alta los códigos nuevos como "pendiente de revisión"
->>>>>>> 7ed0f016edd8eb262836b9e80852b04c1c249d53
       let catalogadosNuevos = 0;
       let catalogadosAutoResueltos = 0;
       let erroresCatalogacion = 0;
@@ -231,6 +219,7 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
             equipo: null,
             pendiente_revision: true,
             creado_por: usuarioId || null,
+            importacion_id: importacionId,
           });
         if (error) {
           console.error(`No se pudo catalogar ${codigo}:`, error.message);
@@ -240,7 +229,6 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
         }
       }
 
-<<<<<<< HEAD
       for (const [codigo, info] of codigosNuevosResueltos) {
         const { error } = await supabase
           .schema('cilindros')
@@ -254,6 +242,7 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
             creado_por: usuarioId || null,
             aprobado_por: usuarioId || null,
             aprobado_en: new Date().toISOString(),
+            importacion_id: importacionId,
           });
         if (error) {
           console.error(`No se pudo catalogar la variante ${codigo}:`, error.message);
@@ -266,11 +255,6 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
       const codigosSetFinal = new Set([...catalogoCodigos, ...codigosNuevosPendientes.keys(), ...codigosNuevosResueltos.keys()]);
       let reparacionesFinales = filasReparacionesAInsertar.filter((r) => codigosSetFinal.has(r.codigo));
 
-=======
-      const codigosSetFinal = new Set([...catalogoCodigos, ...codigosNuevos.keys()]);
-      let reparacionesFinales = filasReparacionesAInsertar.filter((r) => codigosSetFinal.has(r.codigo));
-
->>>>>>> 7ed0f016edd8eb262836b9e80852b04c1c249d53
       // Deduplicar por (código, OC): si el reporte trae la misma OC repetida
       // más de una vez (reenvío, corrección, etc.), Postgres rechaza el
       // upsert entero si dos filas del mismo lote apuntan al mismo conflicto.
@@ -289,17 +273,53 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
 
       const movimientosFinales = movimientosAInsertar.filter((m) => codigosSetFinal.has(m.codigo));
 
-      // Upsert de reparaciones (en bloques)
+      // Separar en altas de verdad (se pueden deshacer) vs. actualizaciones
+      // de reparaciones que ya existían en la base (esas NO se marcan con
+      // esta importación, para que "deshacer" nunca borre historial real
+      // que ya estaba antes de este archivo).
+      const codigosImplicados = [...new Set(reparacionesFinales.map((r) => r.codigo))];
+      const existentesSet = new Set();
+      if (codigosImplicados.length > 0) {
+        const { data: existentes, error: errorExistentes } = await supabase
+          .schema('cilindros')
+          .from('reparaciones')
+          .select('codigo, oc_definitiva')
+          .in('codigo', codigosImplicados);
+        if (errorExistentes) throw errorExistentes;
+        (existentes || []).forEach((e) => existentesSet.add(`${e.codigo}||${e.oc_definitiva}`));
+      }
+
+      const reparacionesNuevas = [];
+      const reparacionesAActualizar = [];
+      reparacionesFinales.forEach((r) => {
+        const key = `${r.codigo}||${r.oc_definitiva}`;
+        if (existentesSet.has(key)) {
+          reparacionesAActualizar.push(r);
+        } else {
+          reparacionesNuevas.push({ ...r, importacion_id: importacionId });
+        }
+      });
+
+      // Insertar las altas nuevas (marcadas, deshacer-seguras)
       const BLOQUE = 300;
       let repInsertadas = 0;
-      for (let i = 0; i < reparacionesFinales.length; i += BLOQUE) {
-        const bloque = reparacionesFinales.slice(i, i + BLOQUE);
+      for (let i = 0; i < reparacionesNuevas.length; i += BLOQUE) {
+        const bloque = reparacionesNuevas.slice(i, i + BLOQUE);
+        const { error } = await supabase.schema('cilindros').from('reparaciones').insert(bloque);
+        if (error) throw error;
+        repInsertadas += bloque.length;
+      }
+
+      // Actualizar las que ya existían (sin tocar su importacion_id original)
+      let repActualizadas = 0;
+      for (let i = 0; i < reparacionesAActualizar.length; i += BLOQUE) {
+        const bloque = reparacionesAActualizar.slice(i, i + BLOQUE);
         const { error } = await supabase
           .schema('cilindros')
           .from('reparaciones')
           .upsert(bloque, { onConflict: 'codigo,oc_definitiva' });
         if (error) throw error;
-        repInsertadas += bloque.length;
+        repActualizadas += bloque.length;
       }
 
       // Insert de movimientos automáticos (uno por vez, son pocos)
@@ -308,7 +328,7 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
         const { error } = await supabase
           .schema('cilindros')
           .from('movimientos')
-          .insert({ codigo: m.codigo, estado: m.estado, observaciones: m.observaciones, registrado_por: usuarioId || null });
+          .insert({ codigo: m.codigo, estado: m.estado, observaciones: m.observaciones, registrado_por: usuarioId || null, importacion_id: importacionId });
         if (error) {
           console.error(`No se pudo registrar movimiento de ${m.codigo}:`, error.message);
         } else {
@@ -344,15 +364,10 @@ export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, est
           Subí el Excel del reporte. Se filtra automáticamente a solo IUSA y códigos de
           cilindro (<strong>CIL...</strong>). Los códigos con OC se cargan como reparación;
           los que no tienen OC se clasifican por su último <strong>ESTADO_FINAL_RC</strong>:
-<<<<<<< HEAD
           en poder del proveedor o dados de baja automáticamente. Si aparece una variante
           de un código ya catalogado (misma pieza, distinta letra final por tipo de
           reparación — N/V/R/NR/NV/etc.), se reconoce sola sin pedir revisión. No duplica
           nada si volvés a importar el mismo reporte más adelante.
-=======
-          en poder del proveedor o dados de baja automáticamente. No duplica nada si volvés
-          a importar el mismo reporte más adelante.
->>>>>>> 7ed0f016edd8eb262836b9e80852b04c1c249d53
         </p>
 
         <input
