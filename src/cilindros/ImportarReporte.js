@@ -53,15 +53,18 @@ function calcularEstadoReparacion(row) {
   return null;
 }
 
-// Saca la letra/letras finales del código (N, V, R, NR, NV, etc.) para
-// comparar cilindros que son el mismo físicamente pero con distinto tipo
-// de reparación según el acuerdo marco. "CIL000-03-479N" y "CIL000-03-479V"
-// tienen el mismo código base: "CIL000-03-479".
-function codigoBase(codigo) {
-  return (codigo || '').toString().toUpperCase().replace(/[A-Z]+$/, '');
+// Todo cilindro real termina en "N" en nuestro catálogo. Cualquier otra
+// letra final (V, R, NR, NV, etc.) es solo el tipo de reparación de un
+// código preestablecido del acuerdo marco — no es una pieza distinta.
+// Por eso todo lo que se importa se normaliza a su versión "N" ANTES de
+// agrupar, catalogar o guardar nada — así nunca llega a existir en la base
+// un código que no termine en N.
+function normalizarCodigoN(codigo) {
+  const base = (codigo || '').toString().toUpperCase().replace(/[A-Z]+$/, '');
+  return base ? `${base}N` : '';
 }
 
-export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConOcEnDB, estadoActualPorCodigo, usuarioId, esAdmin, onImportado, onCerrar }) {
+export default function ImportarReporte({ catalogoCodigos, codigosConOcEnDB, estadoActualPorCodigo, usuarioId, esAdmin, onImportado, onCerrar }) {
   const [archivo, setArchivo] = useState(null);
   const [procesando, setProcesando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -146,28 +149,19 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
         return planta.toString().toUpperCase() === 'IUSA' && codigo.startsWith('CIL');
       });
 
-      // Agrupar por código
+      // Agrupar por código — YA NORMALIZADO a la versión "N" acá mismo, así
+      // "CIL000-04-549V" y "CIL000-04-549N" caen en el mismo grupo desde el
+      // primer paso (son el mismo cilindro).
       const porCodigo = new Map();
       filtradas.forEach((f) => {
-        const codigo = f.REQ_Material;
+        const codigo = normalizarCodigoN(f.REQ_Material);
         if (!codigo) return;
         if (!porCodigo.has(codigo)) porCodigo.set(codigo, []);
         porCodigo.get(codigo).push(f);
       });
 
-      // Mapa: código base (sin la letra final) -> descripción/equipo ya
-      // catalogados, para reconocer variantes de reparación (N/V/R/NR/NV/...)
-      // del mismo cilindro y no tratarlas como código nuevo a revisar.
-      const baseACatalogado = new Map();
-      (catalogo || []).forEach((c) => {
-        if (c.descripcion_unificada) {
-          baseACatalogado.set(codigoBase(c.codigo), { descripcion_unificada: c.descripcion_unificada, equipo: c.equipo });
-        }
-      });
-
       const codigosSet = new Set(catalogoCodigos);
-      const codigosNuevosPendientes = new Map(); // codigo -> descripcion cruda (de verdad nuevos, sin match de base)
-      const codigosNuevosResueltos = new Map(); // codigo -> { descripcion_unificada, equipo } (variante reconocida)
+      const codigosNuevosPendientes = new Map(); // codigo -> descripcion cruda
       const filasReparacionesAInsertar = [];
       const movimientosAInsertar = []; // { codigo, estado, observaciones }
       let sinClasificar = 0;
@@ -179,17 +173,9 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
         const tieneOc = tieneOcEnReporte || codigosConOcEnDB.has(codigo);
 
         const marcarComoNuevoSiHaceFalta = () => {
-          if (codigosSet.has(codigo) || codigosNuevosPendientes.has(codigo) || codigosNuevosResueltos.has(codigo)) return;
-          const match = baseACatalogado.get(codigoBase(codigo));
-          if (match) {
-            // Es la misma pieza que un código ya catalogado, solo cambia el
-            // tipo de reparación (la letra final) — se cataloga solo, sin
-            // pasar por "Pendientes de catalogar".
-            codigosNuevosResueltos.set(codigo, match);
-          } else {
-            const descripcionCruda = filasCodigo[0].REQ_descripcion_corta || filasCodigo[0].REQ_descripcion_larga || codigo;
-            codigosNuevosPendientes.set(codigo, descripcionCruda);
-          }
+          if (codigosSet.has(codigo) || codigosNuevosPendientes.has(codigo)) return;
+          const descripcionCruda = filasCodigo[0].REQ_descripcion_corta || filasCodigo[0].REQ_descripcion_larga || codigo;
+          codigosNuevosPendientes.set(codigo, descripcionCruda);
         };
 
         if (tieneOc) {
@@ -250,11 +236,9 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
         }
       }
 
-      // Dar de alta los códigos nuevos: los que no matchearon ninguna base
-      // quedan "pendiente_revision"; los que sí son variante de reparación
-      // de algo ya catalogado, se dan de alta ya resueltos.
+      // Dar de alta los códigos nuevos (siempre terminados en N) como
+      // pendientes de revisión — un admin les asigna descripción después.
       let catalogadosNuevos = 0;
-      let catalogadosAutoResueltos = 0;
       let erroresCatalogacion = 0;
 
       for (const [codigo, descripcion] of codigosNuevosPendientes) {
@@ -278,30 +262,7 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
         }
       }
 
-      for (const [codigo, info] of codigosNuevosResueltos) {
-        const { error } = await supabase
-          .schema('cilindros')
-          .from('catalogo')
-          .insert({
-            codigo,
-            descripcion_original: info.descripcion_unificada,
-            descripcion_unificada: info.descripcion_unificada,
-            equipo: info.equipo,
-            pendiente_revision: false,
-            creado_por: usuarioId || null,
-            aprobado_por: usuarioId || null,
-            aprobado_en: new Date().toISOString(),
-            importacion_id: importacionId,
-          });
-        if (error) {
-          console.error(`No se pudo catalogar la variante ${codigo}:`, error.message);
-          erroresCatalogacion++;
-        } else {
-          catalogadosAutoResueltos++;
-        }
-      }
-
-      const codigosSetFinal = new Set([...catalogoCodigos, ...codigosNuevosPendientes.keys(), ...codigosNuevosResueltos.keys()]);
+      const codigosSetFinal = new Set([...catalogoCodigos, ...codigosNuevosPendientes.keys()]);
       let reparacionesFinales = filasReparacionesAInsertar.filter((r) => codigosSetFinal.has(r.codigo));
 
       // Deduplicar por (código, OC): si el reporte trae la misma OC repetida
@@ -418,7 +379,6 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
         total,
         codigosDetectados: porCodigo.size,
         catalogadosNuevos,
-        catalogadosAutoResueltos,
         erroresCatalogacion,
         duplicadosDetectados,
         repInsertadas,
@@ -440,12 +400,12 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
         <div style={s.titulo}>Importar reporte de compras</div>
         <p style={s.texto}>
           Subí el Excel del reporte. Se filtra automáticamente a solo IUSA y códigos de
-          cilindro (<strong>CIL...</strong>). Los códigos con OC se cargan como reparación;
-          los que no tienen OC se clasifican por su último <strong>ESTADO_FINAL_RC</strong>:
-          en poder del proveedor o dados de baja automáticamente. Si aparece una variante
-          de un código ya catalogado (misma pieza, distinta letra final por tipo de
-          reparación — N/V/R/NR/NV/etc.), se reconoce sola sin pedir revisión. No duplica
-          nada si volvés a importar el mismo reporte más adelante.
+          cilindro (<strong>CIL...</strong>). Cualquier código que no termine en "N" se
+          normaliza solo a su versión N (las otras letras son solo el tipo de reparación
+          del acuerdo marco, no una pieza distinta). Los códigos con OC se cargan como
+          reparación; los que no tienen OC se clasifican por su último
+          <strong> ESTADO_FINAL_RC</strong>: en poder del proveedor o dados de baja
+          automáticamente. No duplica nada si volvés a importar el mismo reporte más adelante.
         </p>
 
         <input
@@ -474,11 +434,6 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
             {resultado.catalogadosNuevos > 0 && (
               <div style={{ color: '#E8871E' }}>
                 Códigos nuevos dados de alta (pendientes de revisión): <strong>{resultado.catalogadosNuevos}</strong>
-              </div>
-            )}
-            {resultado.catalogadosAutoResueltos > 0 && (
-              <div style={{ color: '#4FA98C' }}>
-                Variantes de reparación reconocidas automáticamente (mismo cilindro, otra letra final): <strong>{resultado.catalogadosAutoResueltos}</strong>
               </div>
             )}
             {resultado.erroresCatalogacion > 0 && (
