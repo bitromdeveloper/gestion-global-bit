@@ -699,6 +699,12 @@ export default function CilindrosApp() {
   // Gana la fuente con la fecha más reciente. Si nunca se cargó un
   // movimiento, se usa lo que diga la última reparación.
   // ============================================================================
+  // Reparaciones de años anteriores a este no cuentan como "en poder del
+  // proveedor" solo por no tener remito cargado — esos datos viejos suelen
+  // estar incompletos, no significa que el cilindro siga ahí hoy. Solo lo
+  // que es de este año en adelante se considera realmente "en curso".
+  const ANIO_DESDE_QUE_CUENTA_EN_PROVEEDOR = 2026;
+
   const estadoEfectivoPorCodigo = useMemo(() => {
     const map = {};
     catalogo.forEach((c) => {
@@ -707,16 +713,20 @@ export default function CilindrosApp() {
 
       const fechaMov = mov?.fecha ? new Date(mov.fecha) : null;
       const fechaRep = rep?.fecha_solicitud ? new Date(rep.fecha_solicitud) : null;
+      const repEsReciente = fechaRep && fechaRep.getFullYear() >= ANIO_DESDE_QUE_CUENTA_EN_PROVEEDOR;
 
       if (fechaMov && (!fechaRep || fechaMov >= fechaRep)) {
         map[c.codigo] = { estado: mov.estado, fecha: mov.fecha, proveedor: mov.proveedor, origen: 'movimiento' };
-      } else if (rep && rep.estado_reparacion === 'En poder del proveedor (en reparación)') {
+      } else if (rep && rep.estado_reparacion === 'En poder del proveedor (en reparación)' && repEsReciente) {
         map[c.codigo] = { estado: 'en_proveedor', fecha: rep.fecha_solicitud, proveedor: rep.proveedor, origen: 'reparacion' };
       } else if (rep && rep.estado_reparacion === 'Reparado - Recibido en Almacén') {
         map[c.codigo] = { estado: 'en_stock', fecha: rep.remito_fecha || rep.fecha_solicitud, proveedor: null, origen: 'reparacion' };
       } else if (mov) {
         map[c.codigo] = { estado: mov.estado, fecha: mov.fecha, proveedor: mov.proveedor, origen: 'movimiento' };
       }
+      // Si no entra en ninguno de los casos de arriba (ej: reparación vieja
+      // sin remito y sin movimiento manual), queda sin estado conocido —
+      // no se muestra como "en proveedor" en ningún lado.
     });
     return map;
   }, [catalogo, estadoActualPorCodigo, ultimaReparacionPorCodigo]);
