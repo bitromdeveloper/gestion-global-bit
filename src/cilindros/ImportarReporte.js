@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '../lib/supabase';
 
@@ -61,10 +61,59 @@ function codigoBase(codigo) {
   return (codigo || '').toString().toUpperCase().replace(/[A-Z]+$/, '');
 }
 
-export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConOcEnDB, estadoActualPorCodigo, usuarioId, onImportado, onCerrar }) {
+export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConOcEnDB, estadoActualPorCodigo, usuarioId, esAdmin, onImportado, onCerrar }) {
   const [archivo, setArchivo] = useState(null);
   const [procesando, setProcesando] = useState(false);
   const [resultado, setResultado] = useState(null);
+  const [ultimaImportacion, setUltimaImportacion] = useState(null);
+  const [deshaciendo, setDeshaciendo] = useState(false);
+
+  useEffect(() => {
+    if (!esAdmin) return;
+    (async () => {
+      const { data } = await supabase
+        .schema('cilindros')
+        .from('importaciones')
+        .select('id, fecha, archivo_nombre')
+        .eq('deshecha', false)
+        .order('fecha', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      setUltimaImportacion(data || null);
+    })();
+  }, [esAdmin, resultado]);
+
+  async function deshacerImportacion() {
+    if (!ultimaImportacion) return;
+    const fechaTexto = new Date(ultimaImportacion.fecha).toLocaleString('es-AR');
+    if (!window.confirm(
+      `¿Deshacer la importación del ${fechaTexto} (${ultimaImportacion.archivo_nombre || 'archivo sin nombre'})?\n\n` +
+      `Se van a borrar las reparaciones, movimientos y códigos que se dieron de alta en esa corrida. ` +
+      `Las reparaciones que ya existían antes y solo se actualizaron NO se tocan.`
+    )) return;
+
+    setDeshaciendo(true);
+    try {
+      const id = ultimaImportacion.id;
+      const { error: e1 } = await supabase.schema('cilindros').from('reparaciones').delete().eq('importacion_id', id);
+      if (e1) throw e1;
+      const { error: e2 } = await supabase.schema('cilindros').from('movimientos').delete().eq('importacion_id', id);
+      if (e2) throw e2;
+      const { error: e3 } = await supabase.schema('cilindros').from('catalogo').delete().eq('importacion_id', id);
+      if (e3) throw e3;
+      const { error: e4 } = await supabase.schema('cilindros').from('importaciones').update({ deshecha: true }).eq('id', id);
+      if (e4) throw e4;
+
+      setUltimaImportacion(null);
+      alert('Importación deshecha correctamente.');
+      if (onImportado) await onImportado();
+    } catch (e) {
+      console.error('Error al deshacer importación:', e);
+      alert('Error al deshacer: ' + e.message);
+    } finally {
+      setDeshaciendo(false);
+    }
+  }
 
   async function procesarArchivo() {
     if (!archivo) return;
@@ -377,6 +426,18 @@ export default function ImportarReporte({ catalogoCodigos, catalogo, codigosConO
           style={s.fileInput}
         />
 
+        {esAdmin && ultimaImportacion && (
+          <div style={s.deshacerBox}>
+            <div style={s.deshacerTexto}>
+              Última importación: {new Date(ultimaImportacion.fecha).toLocaleString('es-AR')}
+              {ultimaImportacion.archivo_nombre ? ` — ${ultimaImportacion.archivo_nombre}` : ''}
+            </div>
+            <button style={s.btnDeshacer} disabled={deshaciendo} onClick={deshacerImportacion}>
+              {deshaciendo ? 'Deshaciendo...' : 'Deshacer esta importación'}
+            </button>
+          </div>
+        )}
+
         {resultado && !resultado.error && (
           <div style={s.resumen}>
             <div>Filas en el archivo: <strong>{resultado.total}</strong></div>
@@ -431,6 +492,16 @@ const s = {
   titulo: { fontSize: 15, fontWeight: 600, marginBottom: 10 },
   texto: { fontSize: 12, color: '#8B9199', lineHeight: 1.5, marginBottom: 16 },
   fileInput: { fontSize: 12, color: '#D8D6D1', marginBottom: 16, width: '100%' },
+  deshacerBox: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+    background: 'rgba(192,57,43,0.08)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 8,
+    padding: '10px 14px', marginBottom: 16,
+  },
+  deshacerTexto: { fontSize: 11.5, color: '#C97369' },
+  btnDeshacer: {
+    background: 'transparent', border: '1px solid #A85248', color: '#C97369', borderRadius: 6,
+    padding: '6px 12px', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500, whiteSpace: 'nowrap',
+  },
   resumen: { fontSize: 12.5, background: '#1C1F22', border: '1px solid #2E3338', borderRadius: 8, padding: 12, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 4 },
   acciones: { display: 'flex', justifyContent: 'flex-end', gap: 8 },
   btnSecundario: { background: '#1C1F22', border: '1px solid #3A4048', color: '#D8D6D1', borderRadius: 6, padding: '8px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' },
